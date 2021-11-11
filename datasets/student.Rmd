@@ -1,0 +1,1460 @@
+---
+title: "Student Absences"
+author: "Alex Kale"
+date: "11/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(ggdist)
+library(gganimate)
+library(gamlss)
+```
+
+## Load dataset
+
+This is data on student absences in two schools in Portugal.
+
+```{r}
+# load math and language class data separately
+df_mat <- read.table("student-mat.csv", sep=";", header=TRUE) %>% dplyr::select(-one_of(c("G1","G2"))) %>% mutate(topic = "math")
+df_lan <- read.table("student-por.csv", sep=";", header=TRUE) %>% dplyr::select(-one_of(c("G1","G2"))) %>% mutate(topic = "language")
+
+# join into one dataset for analysis
+df <- df_mat %>% 
+  full_join(df_lan, by = c("school","sex","age","address","famsize","Pstatus","Medu","Fedu","Mjob","Fjob","reason","guardian","traveltime","studytime","failures","schoolsup","famsup","paid","activities","nursery","higher","internet","romantic","famrel","freetime","goout", "Dalc","Walc","health","absences","G3","topic")) %>%
+  mutate(
+    address = if_else(address=="U", "urban", "rural"),
+    Pstatus = if_else(Pstatus=="A", "separated", "together")
+  ) %>%
+  rename(
+    final_grade = G3
+  )
+
+head(df)
+```
+
+There are a lot of variables in this dataset. We will probably only want to show a subset of these variables in a software evaluation, depending on what looks interesting here.
+
+
+## Exploratory visualization
+
+Here we're seeing what we can reveal about the data generating process through exploratory visualization alone, with no modeling.
+
+This is the outcome variable we'd like to model, school absences.
+
+```{r}
+df %>% ggplot(aes(x = absences)) +
+  stat_slab(slab_type = "histogram") +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+We can think of our predictors in terms of...
+
+proxies for a student's socioeconomic status (though other factors may reflect this as well):
+- Medu 
+- Fedu 
+- Mjob 
+- Fjob 
+- internet
+
+a student's committment to education:
+- studytime
+- failures
+- higher
+
+other info about their home environment:
+- famsize
+- Pstatus
+- address
+- reason
+- guardian
+- traveltime
+- famsup
+- romantic
+- famrel
+- freetime
+- goout
+- Dalc
+- Walc
+
+educational interventions:
+- schoolsup
+- paid
+- activities
+- nursery
+
+and other contextual factors:
+- school
+- topic
+- sex
+- age
+- health
+
+### SES
+
+Let's start by looking at proxies for a student's socioeconomic status.
+
+Parent education
+
+```{r}
+df %>% ggplot(aes(x = absences, y = Medu)) +
+  geom_point(shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+```{r}
+df %>% ggplot(aes(x = absences, y = Fedu)) +
+  geom_point(shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Interesting, students seem to be absent more often when their parents are highly educated.
+
+Parent career
+
+```{r}
+df %>% ggplot(aes(x = absences, y = Mjob)) +
+  geom_point(shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+```{r}
+df %>% ggplot(aes(x = absences, y = Fjob)) +
+  geom_point(shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+A parent's job sector seems to have an impact as well, with students of service workers and "other" workers being absent more often.
+
+Internet access
+
+```{r}
+df %>% ggplot(aes(x = absences, y = internet)) +
+  geom_point(shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Having internet access correlates with more absences. Does this interact with parent education?
+
+```{r}
+df %>% ggplot(aes(x = absences, y = internet)) +
+  geom_point(shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(Medu ~ Fedu)
+```
+
+Access to internet at home seems to correlate more strongly with absences for more educated parents.
+
+### Pursuit of education
+
+Next let's look at proxies for a student's commitment to education:
+
+Time spend studying
+
+```{r}
+df %>% ggplot(aes(x = studytime, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Predictably, students who spend less time studying tend to be absent more often.
+
+Number of times a student has failed any class in the past.
+
+```{r}
+df %>% ggplot(aes(x = failures, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Interesting, students who fail less are absent more.
+
+Whether or not a student is interested in higher education.
+
+```{r}
+df %>% ggplot(aes(x = higher, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Also interesting, students are absent more often if they express interest in pursuing higher education.
+
+Do these things interact at all?
+
+```{r}
+df %>% ggplot(aes(x = higher, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(studytime ~ failures)
+```
+
+Unsurprisingly, students who study a lot tend not to fail. The relationship between interest in higher ed and absences seems pretty consistent. Probably no interaction here.
+
+### Home environment
+
+Now let's look at factors related to a student's home environment. There are far too many variables to use for our user study on EDA, so let's examine just an interesting subset of these variables. 
+
+Do the student's parents live together?
+
+```{r}
+df %>% ggplot(aes(x = Pstatus, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+This seems weakly predictive of school absences, probably not the most important factor.
+
+Does the student live in an urban vs rural address?
+
+```{r}
+df %>% ggplot(aes(x = address, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Rural students are absent less often.
+
+Travel time to get to school.
+
+```{r}
+df %>% ggplot(aes(x = traveltime, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Students who have to travel farther are absent less often. This is counterintuitive. Does it relate to urban vs rural addresses?
+
+```{r}
+df %>% ggplot(aes(x = traveltime, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(. ~ address)
+```
+
+Interesting interaction effect! Students who live near school are only more likely to be absent in cities.
+
+Family educational support.
+
+```{r}
+df %>% ggplot(aes(x = famsup, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Family support seems weakly predictive of absences, similar to whether a student's parents live together.
+
+Self-reported quality of family relationships.
+
+```{r}
+df %>% ggplot(aes(x = famrel, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Students who report stronger family relationships tend to be absent less often, although the relationship doesn't look linear.
+
+### Educational Interventions
+
+Do interventions help with absences?
+
+Extra educational support from school
+
+```{r}
+df %>% ggplot(aes(x = schoolsup, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Extra school support does seem to reduce absences!
+
+Additional ed support paid for by student's family. Probably related to SES.
+
+```{r}
+df %>% ggplot(aes(x = paid, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Support paid for by families seems less effective in reducing absences, though this may be related to the impacts of family education on absences. Let's check the interaction effect.
+
+```{r}
+df %>% ggplot(aes(x = paid, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(Medu ~ Fedu)
+```
+
+Not too sure what to make of this. It's either a complex interaction, or there's nothing there.
+
+### Additional Contextual Factors
+
+Let's look at a few additional contextual factors.
+
+School and course topic.
+
+```{r}
+df %>% ggplot(aes(x = topic, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(. ~ school)
+```
+
+One school has a lot more absences than the other, and regardless of school students seem to skip math courses more often than language courses.
+
+Student age.
+
+```{r}
+df %>% ggplot(aes(x = age, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Age doesn't seem to make much of a difference. Maybe the oldest students are absent less often, but the data are so sparse in these cases that it's hard to tell
+
+Student sex. 
+
+```{r}
+df %>% ggplot(aes(x = sex, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Female students might be absent slightly more often. The relationship could also be explained by outliers.
+
+Student self-reported health.
+
+```{r}
+df %>% ggplot(aes(x = health, y = absences)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Students who report (2) fair but not poor health are absent the least often, but this seems weakly predictive.
+
+
+## Exploratory Modeling
+
+Now, I revisit the analysis above using a model checking workflow.
+
+### Implementing a Poisson model check
+
+In order to iteratively build and check the predictions of models, I'll want a function that takes data and a model specification and returns a dataframe containing an ensemble of model predictions per observation in the dataset. We'll make this a log-normal model since we are analyzing a log-transformed continuous outcome.
+
+
+```{r}
+poisson_model_check <- function(mu_spec, data) {
+  # settings
+  n_draws <- 10
+
+  # catch values of negative inf on log transform
+  log_trans_vars_mu <- str_match_all(mu_spec, "log\\(\\s*(.*?)\\s*\\)")[[1]][,2]
+  for (var_name in log_trans_vars_mu) {
+    # compute log transform of variable and add to dataframe
+    var <- sym(var_name)
+    data <- data %>%
+      mutate(
+        "{{var}}" := if_else({{var}}==0.0,
+                       0.001, # avoid -inf errors by fudging the zeros a bit
+                       {{var}}
+                     ),
+        "log_{{var}}" := log({{var}})
+      )
+    # replace log({{var}}) with log_{{var}} in mu_spec
+    mu_spec <- str_replace_all(mu_spec, paste("log\\(", var_name, "\\)", sep = ""), paste("log_", var_name, sep = ""))
+  }
+
+  # fit model
+  mu_spec <- as.formula(mu_spec)
+  model <- eval(bquote(gamlss(.(mu_spec), data = data, family = PO)))
+
+  # get summary statistics describing model predictions
+  pred <- predict(model, se.fit = TRUE)
+  output <- data %>%
+    mutate(
+      logmu.expectation = pred$fit,                       # add fitted predictions and standard errors to dataframe
+      logse.expectation = pred$se.fit,
+      df = df.residual(model),                            # get degrees of freedom
+      # se.residual = sqrt(sum(residuals(model)^2) / df)    # get residual standard errors
+    )
+
+  # propagate uncertainty in fit to generate an ensemble of model predictions (mimic a posterior predictive distribution)
+  output <- output %>%
+    mutate(
+      .draw = list(1:n_draws),                            # generate list of draw numbers
+      t = map(df, ~rt(n_draws, .))                        # simulate draws from t distribution to transform into log mean rates
+    ) %>%
+    unnest(cols = c(".draw", "t")) %>%
+    mutate(
+      logmu = t * logse.expectation + logmu.expectation,  # scale and shift t to get a sampling distribution of log mean rates
+      mu = exp(logmu)                                     # backtransform to sampling distribution of mean rate parameter
+    ) %>%
+    rowwise() %>%
+    mutate(
+      prediction = rpois(1, mu)                           # compute predictive distribution of counts
+    )
+  # output <- output %>%
+  #   mutate(
+  #     .draw = list(1:n_draws),                            # generate list of draw numbers
+  #     t = map(df, ~rt(n_draws, .)),                       # simulate draws from t distribution to transform into log mean rates
+  #     x = map(df, ~rchisq(n_draws, .))                    # simulate draws from chi-squared distribution to transform into residual sd in log rate units
+  #   ) %>%
+  #   unnest(cols = c(".draw", "t", "x")) %>%
+  #   mutate(
+  #     logmu = t * logse.expectation + logmu.expectation,  # scale and shift t to get a sampling distribution of log mean rates
+  #     logsigma = sqrt(df * se.residual^2 / x)             # scale and take inverse of x to get a sampling distribution of residual sd in log rate units
+  #   ) %>%
+  #   rowwise() %>%
+  #   mutate(
+  #     mu = rlnorm(1, logmu, logsigma),                    # combine logmu with residual sd and backtransform to sampling distribution of mean rate parameter
+  #     prediction = rpois(1, mu)                           # compute predictive distribution of counts
+  #   )
+}
+```
+
+```{r}
+negbinomial_model_check <- function(mu_spec, sigma_spec = "~1", data) {
+  # settings
+  n_draws <- 10
+
+  # catch values of negative inf on log transform
+  log_trans_vars_mu <- str_match_all(mu_spec, "log\\(\\s*(.*?)\\s*\\)")[[1]][,2]
+  for (var_name in log_trans_vars_mu) {
+    # compute log transform of variable and add to dataframe
+    var <- sym(var_name)
+    data <- data %>%
+      mutate(
+        "{{var}}" := if_else({{var}}==0.0,
+                       0.001, # avoid -inf errors by fudging the zeros a bit
+                       {{var}}
+                     ),
+        "log_{{var}}" := log({{var}})
+      )
+    # replace log({{var}}) with log_{{var}} in mu_spec
+    mu_spec <- str_replace_all(mu_spec, paste("log\\(", var_name, "\\)", sep = ""), paste("log_", var_name, sep = ""))
+  }
+  log_trans_vars_sigma <- str_match_all(sigma_spec, "log\\(\\s*(.*?)\\s*\\)")[[1]][,2]
+  for (var_name in log_trans_vars_sigma) {
+    # compute log transform of variable and add to dataframe
+    var <- sym(var_name)
+    data <- data %>%
+      mutate(
+        "{{var}}" := if_else({{var}}==0.0,
+                       0.001, # avoid -inf errors by fudging the zeros a bit
+                       {{var}}
+                     ),
+        "log_{{var}}" := log({{var}})
+      )
+    # replace log({{var}}) with log_{{var}} in sigma_spec
+    sigma_spec <- str_replace_all(sigma_spec, paste("log\\(", var_name, "\\)", sep = ""), paste("log_", var_name, sep = ""))
+  }
+
+  # fit model
+  mu_spec <- as.formula(mu_spec)
+  sigma_spec <- as.formula(sigma_spec)
+  model <- eval(bquote(gamlss(.(mu_spec), sigma.fo = .(sigma_spec), data = data, family = NBII)))
+
+  # get summary statistics describing model predictions
+  pred.mu <- predict(model, se.fit = TRUE)
+  pred.sigma <- predict(model, what = "sigma", se.fit = TRUE)
+  output <- data %>%
+    mutate(
+      logmu.expectation = pred.mu$fit,                    # add fitted logmu and standard errors to dataframe
+      logmu.se = pred.mu$se.fit,
+      df = df.residual(model),                            # get degrees of freedom
+      # se.residual = sqrt(sum(residuals(model)^2) / df)    # get residual standard errors
+      # I don't think the line above is correct ^
+      logsigma.expectation = pred.sigma$fit,              # add fitted logsigma and standard errors to dataframe
+      logsigma.se = pred.sigma$se.fit
+    )
+
+  # propagate uncertainty in fit to generate an ensemble of model predictions (mimic a posterior predictive distribution)
+  output <- output %>%
+    mutate(
+      .draw = list(1:n_draws),                            # generate list of draw numbers
+      t1 = map(df, ~rt(n_draws, .)),                      # simulate draws from t distribution to transform into log mu
+      # x = map(df, ~rchisq(n_draws, .))                    # simulate draws from chi-squared distribution to transform into sigma
+      # I don't think the line above is correct ^
+      t2 = map(df, ~rt(n_draws, .)),                      # simulate draws from t distribution to transform into log sigma
+    ) %>%
+    unnest(cols = c(".draw", "t1", "t2")) %>%
+    mutate(
+      logmu = t1 * logmu.se + logmu.expectation,          # scale and shift t to get a sampling distribution of log mu
+      # sigma = sqrt(df * se.residual^2 / x),               # scale and take inverse of x to get a sampling distribution of sigma
+      # I don't think the line above is correct ^
+      logsigma = t2 * logsigma.se + logsigma.expectation, # scale and shift t to get a sampling distribution of log mu
+      mu = exp(logmu),                                    # backtransform to sampling distributions of mu and sigma parameters
+      sigma = exp(logsigma)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      prediction = rNBII(1, mu, sigma)                    # compute predictive distribution of counts
+    )
+}
+```
+
+<!-- ```{r} -->
+<!-- test_df <- data.frame(mu = 5) %>% -->
+<!--   mutate( -->
+<!--     obs_n = list(1:50), -->
+<!--     absences = map(mu, ~rpois(50, .)) -->
+<!--   ) %>% -->
+<!--   unnest(cols = c("obs_n", "absences")) -->
+<!-- head(test_df) -->
+
+<!-- m.intercept <- poisson_model_check("absences ~ 1", test_df) -->
+
+<!-- plt <- m.intercept %>% ggplot(aes(x = prediction)) + -->
+<!--   geom_point(aes(y = 1), shape = "|", size = 5, color = "red", alpha = 0.7) + -->
+<!--   geom_point(aes(x = absences, y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.intercept$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- test_df <- data.frame(mu = 5, sigma = 5) %>% -->
+<!--   mutate( -->
+<!--     obs_n = list(1:50), -->
+<!--     absences = map(mu, ~rNBII(50, mu, sigma)) -->
+<!--   ) %>% -->
+<!--   unnest(cols = c("obs_n", "absences")) -->
+<!-- head(test_df) -->
+
+<!-- m.intercept <- negbinomial_model_check("absences ~ 1","~1", test_df) -->
+
+<!-- plt <- m.intercept %>% ggplot(aes(x = prediction)) + -->
+<!--   geom_point(aes(y = 1), shape = "|", size = 5, color = "red", alpha = 0.7) + -->
+<!--   geom_point(aes(x = absences, y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.intercept$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+Now that we have a working model check, we can revisit the preceding analysis using an exploratory modeling approach.
+
+### SES
+
+Let's start by looking at proxies for a student's socioeconomic status.
+
+Parent education. We'll start by spliting observations up by parent eductation by comparing to a simple intercept model that doesn't know about parent education.
+
+```{r}
+m.intercept <- poisson_model_check("absences ~ 1", df)
+
+plt <- m.intercept %>% ggplot(aes(y = Medu)) +
+  geom_point(aes(x = prediction), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.2)) + 
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.intercept$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+```{r}
+plt <- m.intercept %>% ggplot(aes(y = Fedu)) +
+  geom_point(aes(x = prediction), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.2)) + 
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.intercept$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Both mother's and father's level of education seems like important predictors. Specifically, students seem to be absent more often when their parents are highly educated. If these predictors are redundant (if mother's and father's education are perfectly correlated), we'll only want to include one of them in our model, but it's also possible that they interact. 
+
+Let's add mother's education to one model and both parent's education to another, and do model checks to determine whether including father's education in addition to mother's education seems necessary.
+
+```{r}
+m.Medu <- poisson_model_check("absences ~ Medu", df)
+m.edu <- poisson_model_check("absences ~ Medu*Fedu", df)
+m.compare <- m.Medu %>%
+  full_join(m.edu, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(y = Medu)) +
+  geom_point(aes(x = prediction.y), shape = "|", size = 5, color = "orange", alpha = 0.7, position = position_nudge(y = 0.3)) +
+  geom_point(aes(x = prediction.x), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.0)) +
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.3)) + 
+  theme_bw() +
+  facet_grid(. ~ Fedu) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 500, res = 100, type = "cairo")
+```
+
+It is very difficult to tell whether one of these models is better than the other. However, it's difficult to rationalize why one parent's education would be important and not the other's unless the two are perfectly correlated, which they do not seem to be. Let's forge ahead with the model including both parents' education.
+
+Parent career. Does a model that knows about parents' education account for differences in absences associated with parents' career?
+
+```{r}
+plt <- m.edu %>% ggplot(aes(y = Mjob)) +
+  geom_point(aes(x = prediction), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.2)) + 
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+```{r}
+plt <- m.edu %>% ggplot(aes(y = Fjob)) +
+  geom_point(aes(x = prediction), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.2)) + 
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+A parent's job sector seems to have an impact on absences, with students of service workers and "other" workers being absent more often. 
+
+Is it possible that parent careers interact? Let's add both partents' careers to models where do not allow these factors to interact, and do a model check to test whether we need them to interact.
+
+```{r}
+m.edu.career <- poisson_model_check("absences ~ Medu*Fedu + Mjob + Fjob", df)
+
+plt <- m.edu.career %>% ggplot(aes(y = Mjob)) +
+  geom_point(aes(x = prediction), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.2)) +
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.2)) + 
+  theme_bw() +
+  facet_grid(. ~ Fjob) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career$.draw), fps = 2, width = 800, height = 400, res = 100, type = "cairo")
+```
+
+The primary thing I notice when looking at this chart are the main effects of each parent's career. To the extent that it appears there may be an interaction, the observed patterns do not look implausible under a model that doesn't include an interaction. It simplifies matters somewhat that a model containing an interaction between parent careers will not fit anyway.
+
+```{r}
+m.edu.careeri <- poisson_model_check("absences ~ Medu*Fedu + Mjob*Fjob", df)
+```
+
+Internet access. Earlier we saw this interact with parent education. Let's take a look at whether our provisional model that knows about parent education can explain patterns related to internet access at home.
+
+```{r}
+plt <- m.edu.career %>% ggplot(aes(y = internet)) +
+  geom_point(aes(x = prediction), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.2)) +
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.2)) + 
+  theme_bw() +
+  facet_grid(Medu ~ Fedu) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+It's clear that this model is not accounting well for the impact of internet, but it's unclear whether we also need to model an interaction effect. Let's try both versions of a model that knows about internet availability at home.
+
+```{r}
+m.edu.career.net <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob", df)
+m.edu.career.neti <- poisson_model_check("absences ~ Medu*Fedu*internet + Mjob + Fjob", df)
+m.compare <- m.edu.career.net %>%
+  full_join(m.edu.career.neti, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(y = internet)) +
+  geom_point(aes(x = prediction.y), shape = "|", size = 5, color = "orange", alpha = 0.7, position = position_nudge(y = 0.3)) +
+  geom_point(aes(x = prediction.x), shape = "|", size = 5, color = "red", alpha = 0.7, position = position_nudge(y = 0.0)) +
+  geom_point(aes(x = absences), shape = "|", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(y = -0.3)) + 
+  theme_bw() +
+  facet_grid(Medu ~ Fedu) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+When looking at visualizations only earlier, I noted that, "Access to internet at home seems to correlate more strongly with absences for more educated parents." However, comparing models that do and do not include an interaction term, I don't see much difference in model predictions. Maybe the interaction I thought I was seeing earlier was just noise in relatively small subsets of the data? We'll proceed without the interaction between internet access and parent education for now.
+
+### Pursuit of education
+
+Next let's look at proxies for a student's commitment to education.
+
+Time spend studying. Does our provisional model account well for the impacts of study time?
+
+```{r}
+plt <- m.edu.career.net %>% ggplot(aes(x = studytime)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career.net$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+No, our model needs to know about the time a student spends studying.
+
+```{r}
+m.edu.career.net.study <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime", df)
+
+plt <- m.edu.career.net.study %>% ggplot(aes(x = studytime)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career.net.study$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+This model's predictions are looking better, but there are still large discrepancies in the range of absences predicted. Maybe this will change as we continue to incorporate other predictors.
+
+Number of times a student has failed any class in the past.
+
+```{r}
+plt <- m.edu.career.net.study %>% ggplot(aes(x = failures)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career.net.study$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+The fact that students who fail less courses are absent more often is counterintuitive. It also seems like a strong effect that our model should be aware of.
+
+```{r}
+m.edu.career.net.study.fail <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures", df)
+m.compare <- m.edu.career.net.study %>%
+  full_join(m.edu.career.net.study.fail, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = failures)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Interesting. Our model doesn't seem to be doing much better when it knows about failures. Still it seems to make a slight difference.
+
+Whether or not a student is interested in higher education.
+
+```{r}
+plt <- m.edu.career.net.study.fail %>% ggplot(aes(x = higher)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career.net.study.fail$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+This also seems like something our model should know about. Students who are interested in higher education are absent a lot more.
+
+```{r}
+m.edu.career.net.study.fail.high <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher", df)
+m.compare <- m.edu.career.net.study.fail %>%
+  full_join(m.edu.career.net.study.fail.high, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = higher)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Again, adding this seemingly important factor to our model seems to make less of a difference in model predictions than expected. Could there be an interaction among these proxies for student interest in education.
+
+```{r}
+plt <- m.edu.career.net.study.fail.high %>% ggplot(aes(x = higher)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  facet_grid(studytime ~ failures) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.edu.career.net.study.fail.high$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+There doesn't appear to be an interaction. 
+
+However, we are struggling to predict the dispersion of the data. Let's try a negative Binomial model which is better for overdispersed count data.
+
+```{r}
+nb.edu.career.net.study.fail.high <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher","~1", df)
+
+plt <- nb.edu.career.net.study.fail.high %>% ggplot(aes(x = higher)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  facet_grid(studytime ~ failures) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+Better, but now it looks like there's an interaction of studytime and failures with respect to the dispersion of the absence distributions. Let's add a variance submodel to account for this interaction.
+
+```{r}
+nb.edu.career.net.studys.fails.high <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher","~studytime*failures", df)
+m.compare <- nb.edu.career.net.study.fail.high %>%
+  full_join(nb.edu.career.net.studys.fails.high, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = higher)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  facet_grid(studytime ~ failures) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+It looks like the model predictions get way off for some subplots (upper right) when we add a variance submodel. Let's not model variance as a function of studytime and failures, but let's keep the negative binomial model.
+
+### Home environment
+
+Now let's look at factors related to a student's home environment.
+
+Do the student's parents live together?
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high %>% ggplot(aes(x = Pstatus)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Earlier when visualizing this data I said that, "Pstatus seems weakly predictive of school absences, probably not the most important factor." It actually looks like the other predictors in our model explain the impact of Pstatus.
+
+Does the student live in an urban vs rural address?
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high %>% ggplot(aes(x = address)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Rural students are absent less often. This factor is looking somewhat more important than Pstatus, so let's also add this to our model to see if we can do better at predicting the full range of outcomes.
+
+```{r}
+nb.edu.career.net.study.fail.high.address <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address","~1", df)
+m.compare <- nb.edu.career.net.study.fail.high %>%
+  full_join(nb.edu.career.net.study.fail.high.address, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = address)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Hmmm, accounting for urban vs rural address doesn't help our model predictions as much as it seems like it ought to. It seems like our predictions become overdispersed. Maybe this is because of an interaction between address and distance from school that I thought I was seeing earlier? Let's see how well our model that's aware of address but not traveltime does at predicting the crosssection of these factors, compared to a model that includes this interaction effect.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime","~1", df)
+m.compare <- nb.edu.career.net.study.fail.high.address %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = address)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  facet_grid(. ~ traveltime) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo")
+```
+
+Students who live near school are only more likely to be absent in cities. The model that's aware of this interaction effect has better predictions in that we are only predicting the largest number of absences for students with urban addresses and short traveltimes. However, the data is pretty sparse for students who travel long distances to school. The evidence for an interaction effect is weaker than I previously acknowledged.
+
+Family educational support. Does our model need to know about this?
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high.address.travel %>% ggplot(aes(x = famsup)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high.address.travel$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Family support seems weakly predictive of absences, if at all, similar to whether a student's parents live together. I'm not convinced that our model isn't already accounting for the variablity here, perhaps because family support is correlated with other factors we've already included in our model such as indicators of SES.
+
+Self-reported quality of family relationships.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.famrel <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + famrel", "~1", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.famrel, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = famrel)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Students who report stronger family relationships tend to be absent less often, although I'm not sure that adding famrel to the model seems to better account for this. Let's look at residuals.
+
+```{r}
+plt <- m.compare %>% 
+  mutate(
+    res.x = absences - prediction.x,
+    res.y = absences - prediction.y
+  ) %>%
+  ggplot(aes(x = famrel)) +
+  geom_point(aes(y = res.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = res.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+We're getting more large negative residuals with the model that's aware of famrel, indicating that we're now overestimating absences, especially in families with low famrel scores. Let's leave famrel out of the model.
+
+
+### Educational Interventions
+
+Do interventions help with absences?
+
+Extra educational support from school. We saw earlier that this made a difference. What happens if we add it to our model?
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.schoolsup <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + schoolsup", "~1", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.schoolsup, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = schoolsup)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Earlier, I confidently declared that, "Extra school support does seem to reduce absences!" Indeed this is the apparent pattern, but telling our model about school support doesn't seem to improve predictions.
+
+Additional ed support paid for by student's family.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.paid <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + paid", "~1", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.paid, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = paid)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Again, the benefits of modeling support paid for by families is unclear. This seems like a predictor that's probably correlated with parents' education, maybe just a proxy for SES.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.paidi <- negbinomial_model_check("absences ~ Medu*Fedu*paid + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime", "~1", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.paidi, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = paid)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  facet_grid(Medu ~ Fedu) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+Earlier I said, "Not too sure what to make of this. It's either a complex interaction, or there's nothing there." The sparsity of the data makes it difficult to say for sure what's going on here, but a model check makes it easier to see that apparent differences between students with vs without paid support across levels of parent education are just as well explained by differences in parent education alone.
+
+### Additional Contextual Factors
+
+Let's look at a few additional contextual factors.
+
+School and course topic.
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high.address.travel %>% ggplot(aes(x = topic)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  facet_grid(. ~ school) + 
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high.address.travel$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo")
+```
+
+One school has a lot more absences than the other, and regardless of school students seem to skip math courses more often than language courses. No interaction here, but there are clear main effects which may not be explained by other variables in our model.
+
+Let's add these main effects to our model.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.sch.top <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + school + topic","~1", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.sch.top, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = topic)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  facet_grid(. ~ school) + 
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo")
+```
+
+It seems like our predictions are now overdispersed for the school with fewer absences. Let's try adding school as a predictor of variance, comparing again to the model without school or topic.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.sch.top <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + school + topic","~school", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.sch.top, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = topic)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  facet_grid(. ~ school) + 
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo")
+```
+
+This seems like one of the better improvements in model performance we've seen. School especially seems like an important factor.
+
+Student age.
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high.address.travel.sch.top %>% 
+  ggplot(aes(x = age)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high.address.travel.sch.top$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Age doesn't seem to make much of a difference, and our model does alright at accounting for patterns across age without using it as a predictor.
+
+Student sex. 
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high.address.travel.sch.top %>% 
+  ggplot(aes(x = sex)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high.address.travel.sch.top$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+I'm not seeing much of a systematic difference between the sexes. This would seem like a strange thing to model in terms of sex anyway since any differences are probably better _explained_ in terms of other factors.
+
+Student self-reported health.
+
+```{r}
+plt <- nb.edu.career.net.study.fail.high.address.travel.sch.top %>% 
+  ggplot(aes(x = health)) +
+  geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(nb.edu.career.net.study.fail.high.address.travel.sch.top$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+These differences might be important enough to add to our model, but I doubt it. Let's check.
+
+```{r}
+nb.edu.career.net.study.fail.high.address.travel.sch.top.health <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + school + topic + health","~school", df)
+m.compare <- nb.edu.career.net.study.fail.high.address.travel.sch.top %>%
+  full_join(nb.edu.career.net.study.fail.high.address.travel.sch.top.health, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+
+plt <- m.compare %>% 
+  ggplot(aes(x = health)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Adding health to our model doesn't seem to make much of a difference in model predictions.
+
+### Overview 
+
+Our final model is `absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + school + topic + health","sigma ~ school`. Modeling this dataset is basically a massive feature selection task, and I would not expect every user to arrive at the same result. This makes me think that the important thing to measure is not whether they arrive at the "right" set of predictors, but instead whether model checks seem to change their thinking. For me, the biggest difference I noticed in my own behavior when using model checks was that I was much less willing to conclude that a predictor was important on its own in isolation from other variables. Model checks made me think a lot more about how features might be correlated or might capture redundant information as far as a model is concerned. 
+
+There are also certain insights that seem like they should be discoverable in general, e.g., about the relative importance of different predictors or the fact that a Poisson model leads to consistently underdispersed predictions. The realization about dispersion leads to the insight that it probably doesn't make sense to infer a single rate of absences per a student's circumstance but rather a distribution of rates resulting in greater variation in counts. However, I only had this insight because I know the difference between a Poisson and a Negative Binomial model. A Negative Binomial is basically a mixture of Poisson models with Gamma distributed rate parameters, which in laypeople's terms means that a Negative Binomial should be preferred when I observe a lot of variation in counts, more than can be accounted for by a single process whose variation in counts matches the average count (i.e., a Poisson process). There's also just the practical matter that a negative binomial model enables me to model variance in counts as a function of, e.g., what school a student attends. These practical affordances of the Negative Binomial should be noticeable to a user who is provided a description like, "The Negative Binomial is good for overdispersed counts," and tries it out, even if they don't know what a Negative Binomial is. Maybe this leads to an insight about data generating process later on if the user decides to read up on Negative Binomials and reflect upon why such a model might make sense for their data.
+
+```{r}
+pois <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + school + topic", df)
+nb <- negbinomial_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + address*traveltime + school + topic","~school", df)
+m.compare <- pois %>%
+  full_join(nb, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw"))
+
+plt <- m.compare %>% ggplot(aes(x = topic)) +
+  geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) + 
+  geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) + 
+  geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) + 
+  labs(y = "absences") +
+  theme_bw() +
+  facet_grid(. ~ school) + 
+  transition_states(.draw, 0, 1)
+
+anim <- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo")
+# anim
+anim_save("pois-vs-nb.gif", anim)
+```
+
+
+<!-- however, there are a few students with more than 40 absences who appear to be outliers. Since we are struggling to explain these students using any of our predictors, we may consider filtering them out of the dataset. -->
+
+<!-- ```{r} -->
+<!-- df_below40 <- df %>% filter(absences < 40) -->
+
+<!-- m.edu.career.net.study.fail.high_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher", df_below40) -->
+
+<!-- plt <- m.edu.career.net.study.fail.high_below40 %>% ggplot(aes(x = higher)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) + -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   facet_grid(studytime ~ failures) + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high_below40$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- That's looking better. -->
+
+<!-- ### Home environment -->
+
+<!-- Now let's look at factors related to a student's home environment. -->
+
+<!-- Do the student's parents live together? -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high_below40 %>% ggplot(aes(x = Pstatus)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Earlier when visualizing this data I said that, "Pstatus seems weakly predictive of school absences, probably not the most important factor." Now I'm thinking it looks more important. -->
+
+<!-- Let's try adding it to our model. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = Pstatus)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- This helps a bit, but not as much as I'd like. -->
+
+<!-- Does the student live in an urban vs rural address? -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high.status_below40 %>% ggplot(aes(x = address)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high.status_below40$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Rural students are absent less often, so let's also add this to our model to see if we can do better at predicting the full range of outcomes. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = address)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Hmmm, accounting for urban vs rural address doesn't help our model predictions as much as it seems like it ought to. Maybe this is because of an interaction between address and distance from school that I thought I was seeing earlier? Let's see how well our model that's aware of address but not traveltime does at predicting the crosssection of these factors, compared to a model that includes this interaction effect. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = address)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   facet_grid(. ~ traveltime) + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Students who live near school are only more likely to be absent in cities. The model that's aware of this interaction effect has slightly better predictions, however, the data is pretty sparse for students who travel long distances to school. The evidence for an interaction effect is weaker than I previously acknowledged. -->
+
+<!-- Family educational support. Does our model need to know about this? -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high.status.address.travel_below40 %>% ggplot(aes(x = famsup)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high.status.address.travel_below40$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Family support seems weakly predictive of absences, similar to whether a student's parents live together. -->
+
+<!-- Let's add it to our model and see if there's any improvement. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel.famsup_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famsup", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address.travel_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel.famsup_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = famsup)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- It's unlcear whether telling our model about family support makes a difference. Should we just leave it out of our model? -->
+
+<!-- Self-reported quality of family relationships. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel.famrel_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famrel", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address.travel_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel.famrel_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = famrel)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Students who report stronger family relationships tend to be absent less often, and adding famrel to the model seems to better account for this. -->
+
+<!-- ### Educational Interventions -->
+
+<!-- Do interventions help with absences? -->
+
+<!-- Extra educational support from school. We saw earlier that this made a difference. What happens if we add it to our model? -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel.famrel.schoolsup_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famrel + schoolsup", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address.travel.famrel_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel.famrel.schoolsup_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = schoolsup)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Earlier, I confidently declared that, "Extra school support does seem to reduce absences!" Indeed this is the apparent pattern, but telling our model about school support doesn't seem to make much of a difference in predictions. -->
+
+<!-- Additional ed support paid for by student's family. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel.famrel.paid_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famrel + paid", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address.travel.famrel_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel.famrel.paid_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = paid)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Again, the benefits of modeling support paid for by families is unclear. This seems like a predictor that's probably correlated with parents' education, maybe just a proxy for SES. -->
+
+<!-- ```{r} -->
+<!-- plt <- m.compare %>% ggplot(aes(x = paid)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   facet_grid(Medu ~ Fedu) + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- I feel the same about this as I did without a model check: "Not too sure what to make of this. It's either a complex interaction, or there's nothing there." The sparsity of the data makes it difficult to say for sure what's going on here. -->
+
+<!-- ### Additional Contextual Factors -->
+
+<!-- Let's look at a few additional contextual factors. -->
+
+<!-- School and course topic. -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high.status.address.travel.famrel_below40 %>% ggplot(aes(x = topic)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   facet_grid(. ~ school) +  -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high.status.address.travel.famrel_below40$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- One school has a lot more absences than the other, and regardless of school students seem to skip math courses more often than language courses. No interaction here, but there are clear main effects. -->
+
+<!-- Let's add these main effects to our model. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famrel + school + topic", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address.travel.famrel_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+<!-- plt <- m.compare %>% ggplot(aes(x = topic)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   facet_grid(. ~ school) +  -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- This seems like one of the better improvements in model performance we've seen. School especially seems like an important factor. -->
+
+<!-- Student age. -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40 %>%  -->
+<!--   ggplot(aes(x = age)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Age doesn't seem to make much of a difference, and our model does alright at accounting for patterns across age without using it as a predictor. -->
+
+<!-- Student sex.  -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40 %>%  -->
+<!--   ggplot(aes(x = sex)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- I'm not seeing much of a systematic difference between the sexes. This would seem like a strange thing to model in terms of sex anyway since any differences are probably better _explained_ in terms of other correlated factors -->
+
+<!-- Student self-reported health. -->
+
+<!-- ```{r} -->
+<!-- plt <- m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40 %>%  -->
+<!--   ggplot(aes(x = health)) + -->
+<!--   geom_point(aes(y = prediction), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- These differences might be important enough to add to our model. Let's check. -->
+
+<!-- ```{r} -->
+<!-- m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic.health_below40 <- poisson_model_check("absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famrel + school + topic + health", df_below40) -->
+<!-- m.compare <- m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic_below40 %>% -->
+<!--   full_join(m.edu.career.net.study.fail.high.status.address.travel.famrel.school.topic.health_below40, by = c("school", "sex", "age", "address", "famsize", "Pstatus", "Medu", "Fedu", "Mjob", "Fjob", "reason", "guardian", "traveltime", "studytime", "failures", "schoolsup", "famsup", "paid", "activities", "nursery", "higher", "internet", "romantic", "famrel", "freetime", "goout", "Dalc", "Walc", "health", "absences", "final_grade", "topic", ".draw")) -->
+
+
+<!-- plt <- m.compare %>%  -->
+<!--   ggplot(aes(x = health)) + -->
+<!--   geom_point(aes(y = prediction.y), shape = "_", size = 5, color = "orange", alpha = 0.7, position = position_nudge(x = 0.3)) +  -->
+<!--   geom_point(aes(y = prediction.x), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.0)) +  -->
+<!--   geom_point(aes(y = absences), shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.3)) +  -->
+<!--   theme_bw() + -->
+<!--   transition_states(.draw, 0, 1) -->
+
+<!-- animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo") -->
+<!-- ``` -->
+
+<!-- Adding health to our model doesn't seem to make much of a difference in model predictions. -->
+
+<!-- ### Overview  -->
+
+<!-- Our final model is `absences ~ Medu*Fedu + internet + Mjob + Fjob + studytime + failures + higher + Pstatus + address*traveltime + famrel + school + topic`. Modeling this dataset is basically a massive feature selection task, and I would not expect every user to arrive at the same result. This makes me think that the important thing to measure is not whether they arrive at the "right" set of predictors, but instead whether model checks seem to change their thinking. For me, the biggest difference I noticed in my own behavior when using model checks was that I was much less willing to conclude that a predictor was important on its own in isolation from other variables. Model checks made me think a lot more about how features might be correlated or might capture redundant information as far as a model is concerned. -->
+
+
