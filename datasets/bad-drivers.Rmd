@@ -1,0 +1,98 @@
+---
+title: "Bad Drivers"
+author: "Alex Kale"
+date: "11/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(ggdist)
+```
+
+## Load dataset
+
+This is data on fatal collisions and average insurance premiums per state.
+
+```{r}
+df <- read_csv("bad-drivers.csv") %>%
+  rename(
+    state = `State`,
+    fatal_accidents_per_billion_miles =`Number of drivers involved in fatal collisions per billion miles`,
+    percent_speeding = `Percentage Of Drivers Involved In Fatal Collisions Who Were Speeding`,
+    percent_alcohol = `Percentage Of Drivers Involved In Fatal Collisions Who Were Alcohol-Impaired`,
+    percent_not_distracted = `Percentage Of Drivers Involved In Fatal Collisions Who Were Not Distracted`,
+    percent_first_accident = `Percentage Of Drivers Involved In Fatal Collisions Who Had Not Been Involved In Any Previous Accidents`,
+    avg_insurance_premium = `Car Insurance Premiums ($)`,
+    insurance_payout_per_driver = `Losses incurred by insurance companies for collisions per insured driver ($)`
+  )
+
+head(df)
+```
+
+
+## Exploratory visualization
+
+Here we're seeing what we can reveal about the data generating process through exploratory visualization alone, with no modeling.
+
+This is the outcome variable we'd like to model, the average insurance premium per state.
+
+```{r}
+df %>% ggplot(aes(x = avg_insurance_premium)) +
+  stat_slab(slab_type = "histogram") +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Let's separate this out by state to see if we notice any patterns.
+
+```{r}
+df %>% ggplot(aes(x = avg_insurance_premium, y = reorder(state, desc(state)))) +
+  geom_point(size = 3, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+I'm noticing that the states with the highest average premiums are liberal states with large urban areas. Could this trend be explained by the rate of traffic accidents? Unfortunately, we only have data on _fatal_ accidents, which is a different statistic but could still be informative.
+
+```{r}
+df %>% ggplot(aes(x = fatal_accidents_per_billion_miles, y = avg_insurance_premium)) +
+  geom_point(size = 3, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+The rate of fatal accidents seems not to strongly predict average premiums. Although, it's possible that we're looking at a mixture of patterns.
+
+Other variables that might explain state-level average premiums are proxies for dangerous behavior, such as percent of fatal accidents involving speeding, alcohol, or distraction.
+
+```{r}
+df %>% ggplot(aes(x = percent_speeding, y = avg_insurance_premium)) +
+  geom_point(size = 3, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+```{r}
+df %>% ggplot(aes(x = percent_alcohol, y = avg_insurance_premium)) +
+  geom_point(size = 3, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+```{r}
+# derive percent distracted by assuming a binary variable
+df <- df %>% 
+  mutate(percent_distracted = 100 - percent_not_distracted) 
+
+df %>% ggplot(aes(x = percent_distracted, y = avg_insurance_premium)) +
+  geom_point(size = 3, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+None of these factors seem to directly explain insurance premiums on their own. What if we look at a loose proxy for safety: the percent of drivers involved in fatal accidents for whom this was their first accident?
+
+```{r}
+df %>% ggplot(aes(x = percent_first_accident, y = avg_insurance_premium)) +
+  geom_point(size = 3, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+

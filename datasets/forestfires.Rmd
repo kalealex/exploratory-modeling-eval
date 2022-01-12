@@ -1,0 +1,813 @@
+---
+title: "Forest Fires"
+author: "Alex Kale"
+date: "11/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(ggdist)
+library(gganimate)
+library(gamlss)
+```
+
+## Load dataset
+
+This is data on the area of land burned in forest fires in the northeast region of Portugal.
+
+```{r}
+df <- read_csv("forestfires.csv") %>%
+  mutate(
+    month = fct_relevel(month, "jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"),
+    day = fct_relevel(day, "mon","tue","wed","thu","fri","sat","sun")#,
+    # area = if_else(area==0.0,
+    #                0.001, # avoid -inf
+    #                area
+    #        )
+  ) 
+
+head(df)
+```
+
+## Exploratory visualization
+
+Here we're seeing what we can reveal about the data generating process through exploratory visualization alone, with no modeling.
+
+This is the outcome variable we'd like to model, area of forest burned.
+
+```{r}
+df %>% ggplot(aes(x = area)) +
+  stat_slab(slab_type = "histogram") +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+It's probably going to be more appropriate to log transform area before analyzing it, since the data distribution is lower-bounded at zero and heavily skewed to the right.
+
+```{r}
+df %>% ggplot(aes(x = log(area))) +
+  stat_slab(slab_type = "histogram") +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+There's something satisfying about getting the transform right and seeing that the outcome variable is now approximately normally distributed. This will make it easier for us to see patterns in the data, and it will also support much better modeling of area as an outcome. (Note that we're dropping a bunch of observations were `log(0.0) = -inf`, which I didn't notice until I started modeling)
+
+### Spatial factors
+
+Let's see if the spatial variables X and Y predict burned land area.
+
+```{r}
+df %>% ggplot(aes(x = log(area))) +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(Y ~ X)
+```
+
+Fires seem to happen mostly in the north part of the country. Later, we'll want to inspect whether this can be explained by some other factor that is correlated with geography, such as moisture or other climate conditions.
+
+### Temporal factors
+
+Do we see seasonal effects if we look at burned area per month?
+
+```{r}
+df %>% ggplot(aes(x = month, y = log(area))) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() 
+```
+Interesting, month-of-the-year seems to mostly influence the variance in log area burned, but it's not clear whether the land area burned by an average fire is different in different months of the year. Although fires are clearly much more prevalent in the summer months.
+
+What about day of the week? We might expect an effect if there are, e.g., more fires on weekends due to more outdoor recreation or fewer available firefighters.
+
+```{r}
+df %>% ggplot(aes(x = day, y = log(area))) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw() 
+# ggsave("vis.png", plt, width = 4, height = 3, units = "in")
+```
+
+Day of the week doesn't seem to make much difference. Maybe fire danger is slightly higher on the weekends? Hard to say without using a model.
+
+### Weather and climate factors
+
+Temperature in degrees Celsius.
+
+```{r}
+df %>% ggplot(aes(x = temp, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Similar to month of the year, we see more of an increase in variance with increasing temperatures and not so much of a change in average area burned.
+
+Does this temperature impact on variance explain the apparent effect of month we saw earlier?
+
+```{r}
+df %>% ggplot(aes(x = temp, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(. ~ month)
+```
+
+It looks like month-of-year impacts are explained by temperature. This means we can use a variance submodel for temperature and use month as a distractor variable whose apparent impact is mediated by temperature.
+
+Relative humidity.
+
+```{r}
+df %>% ggplot(aes(x = RH, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+To the extent that we see a decrease in the variance of area burned with increasing humidity, this may just be due to a correlation with temperature. Let's check this hypothesis.
+
+```{r}
+df %>% ggplot(aes(x = RH, y = temp)) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+This negative correlation between relative humidity and temperature confirms my hunch that increased variance in burned area at low humidity corresponds to the same increased variance in burned area when temperatures are high. It's difficult to disentangle these two factors, but it seems likely that temperature and moisture on the ground (measured by fire danger indicies) play a larger role than humidity in the atmosphere. If I were modeling this I'd compare models with and without RH as a predictor and see if predictions change.
+
+Wind speed in km/h.
+
+```{r}
+df %>% ggplot(aes(x = wind, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Wind speed seems to make less of a difference than expected. Maybe a good variable to include to see if chart users can detect a weak effect.
+
+Rain in mm/m2.
+
+```{r}
+df %>% ggplot(aes(x = rain, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Most fires occur on days with no rain, however, because of this we do not have data on very many rainy days, and we will struggle to estimate an effect of rainfall. This will create an identifiability problem when we try to model our dataset, unless we make this into a binary variable (rain vs no rain).
+
+
+### Indicies for fire danger
+
+These indicators are explained [here](https://cwfis.cfs.nrcan.gc.ca/background/summary/fwi).
+
+Fine Fuel Moisture Code.
+
+```{r}
+df %>% ggplot(aes(x = FFMC, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+FFMC seems highly predictive of fires spreading quickly. This basically an index for how dry the top layer of forest debris are. 
+
+Is this strongly correlated with rain the way we might expect it to be?
+
+```{r}
+df %>% ggplot(aes(x = rain, y = FFMC)) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+No rain seems to guarantee high FFMC, and thus high fire danger. These variables probably capture the same causal factor.
+
+Duff Moisture Code.
+
+```{r}
+df %>% ggplot(aes(x = DMC, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+DMC seems weakly predictive of fires. This is how dry mid-depth sediments are.
+
+Draught Code.
+
+```{r}
+df %>% ggplot(aes(x = DC, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+DC seems weakly predictive of fires. This is an index for how dry the deep ground is.
+
+Initial Spread Index.
+
+```{r}
+df %>% ggplot(aes(x = ISI, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+ISI seems weakly predictive of area burned. This index is derived from FFMC and wind speed, so it's redundant with other, better predictors.
+
+### Re-examining geography
+
+Our strongest predictors so far seem to be temperature and rainfall. Do these climate factors explain the apparent impacts of geography we saw earlier.
+
+We'll look at temperature first.
+
+```{r}
+df %>% ggplot(aes(x = temp, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(Y ~ X)
+```
+
+Although there are more fires that burn more area in the mid-latitudes, they don't really seem to be driven by noticable differences in temperature. If these factors interact, I'm not seeing it.
+
+What about rainfall?
+
+```{r}
+df %>% ggplot(aes(x = rain, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(Y ~ X)
+```
+
+Again, we don't really have enough information about rainy days to get a full picture of the climate patterns across geographic regions.
+
+What about a weaker predictor like wind?
+
+```{r}
+df %>% ggplot(aes(x = wind, y = log(area))) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(Y ~ X)
+```
+
+Wind does seem to interact with geography, which both makes sense and helps to explain why the apparent impact of wind seems weaker than expected when we examine it in isolation. However, we might have trouble modeling this interaction effect because some areas have no fires in them. 
+
+## Exploratory Modeling
+
+Now, I revisit the analysis above using a model checking workflow.
+
+### Implementing a log-normal model check
+
+In order to iteratively build and check the predictions of models, I'll want a function that takes data and a model specification and returns a dataframe containing an ensemble of model predictions per observation in the dataset. We'll make this a log-normal model since we are analyzing a log-transformed continuous outcome.
+
+
+```{r}
+lognormal_model_check <- function(mu_spec, sigma_spec = "~1", data) {
+  # settings
+  n_draws <- 10
+
+  # catch values of negative inf on log transform
+  log_trans_vars_mu <- str_match_all(mu_spec, "log\\(\\s*(.*?)\\s*\\)")[[1]][,2]
+  for (var_name in log_trans_vars_mu) {
+    # compute log transform of variable and add to dataframe
+    var <- sym(var_name)
+    data <- data %>%
+      mutate(
+        "{{var}}" := if_else({{var}}==0.0,
+                       0.001, # avoid -inf errors by fudging the zeros a bit
+                       {{var}}
+                     ),
+        "log_{{var}}" := log({{var}})
+      )
+    # replace log({{var}}) with log_{{var}} in mu_spec
+    mu_spec <- str_replace_all(mu_spec, paste("log\\(", var_name, "\\)", sep = ""), paste("log_", var_name, sep = ""))
+  }
+  log_trans_vars_sigma <- str_match_all(sigma_spec, "log\\(\\s*(.*?)\\s*\\)")[[1]][,2]
+  for (var_name in log_trans_vars_sigma) {
+    # compute log transform of variable and add to dataframe
+    var <- sym(var_name)
+    data <- data %>%
+      mutate(
+        "{{var}}" := if_else({{var}}==0.0,
+                       0.001, # avoid -inf errors by fudging the zeros a bit
+                       {{var}}
+                     ),
+        "log_{{var}}" := log({{var}})
+      )
+    # replace log({{var}}) with log_{{var}} in sigma_spec
+    sigma_spec <- str_replace_all(sigma_spec, paste("log\\(", var_name, "\\)", sep = ""), paste("log_", var_name, sep = ""))
+  }
+  head(data)
+
+  # fit model
+  mu_spec <- as.formula(mu_spec)
+  sigma_spec <- as.formula(sigma_spec)
+  model <- eval(bquote(gamlss(.(mu_spec), sigma.fo = .(sigma_spec), data = data)))
+
+  # get summary statistics describing model predictions
+  pred <- predict(model, se.fit = TRUE, type = "response")
+  output <- data %>%
+    mutate(
+      mu.expectation = pred$fit,                          # add fitted predictions and standard errors to dataframe
+      se.expectation = pred$se.fit,
+      df = df.residual(model),                            # get degrees of freedom
+      se.residual = sqrt(sum(residuals(model)^2) / df)    # get residual standard errors
+    )
+
+  # propagate uncertainty in fit to generate an ensemble of model predictions (mimic a posterior predictive distribution)
+  output <- output %>%
+    mutate(
+      .draw = list(1:n_draws),                            # generate list of draw numbers
+      t = map(df, ~rt(n_draws, .)),                       # simulate draws from t distribution to transform into means
+      x = map(df, ~rchisq(n_draws, .))                    # simulate draws from chi-squared distribution to transform into sigmas
+    ) %>%
+    unnest(cols = c(".draw", "t", "x")) %>%
+    mutate(
+      mu = t * se.expectation + mu.expectation,           # scale and shift t to get a sampling distribution of means
+      sigma = sqrt(df * se.residual^2 / x)                # scale and take inverse of x to get a sampling distribution of sigmas
+    ) %>%
+    rowwise() %>%
+    mutate(
+      prediction = rlnorm(1, mu, sigma)                   # compute predictive distribution in backtransformed units
+    )
+}
+```
+
+Now that we have a working model check, we can revisit the preceding analysis using an exploratory modeling approach.
+
+### Spatial factors
+
+Let's see if the spatial variables X and Y predict burned land area. To see if the patterns across different regions are likely to be noise, we'll compare the faceted data distributions to predictions from an intercept model.
+
+```{r}
+m.intercept <- lognormal_model_check("log(area) ~ 1", "~1", df)
+
+plt <- m.intercept %>% 
+  ggplot(aes(x = log(area))) +
+  geom_point(aes(x = log(prediction), y = 1, group = .draw), shape = "|", size = 5, color = "red", alpha = 0.7) +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) +
+  theme_bw() +
+  facet_grid(Y ~ X) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.intercept$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+Fires seem to happen mostly in the north part of the country. It's clear from our model check that these different patterns are unlikely to be due to chance.
+
+Earlier, we looked for interactions between geography and other variables, especially temperature and wind speed. Let's see if we can tease out whether these interactions are likely to exist using model predictions. To check both of these variables, we'll create a model that is aware of geographic distinctions but not regional differences in weather. If we plot regional differences in weather and the model predictions seem wrong, we'll know that those variables are important. If the nature of the mismatch is different across faceted charts, we'll know that there's probably an interaction effect.
+
+We'll look at temperature first.
+
+```{r}
+m.geography <- lognormal_model_check("log(area) ~ X*Y", "~1", df)
+
+plt <- m.geography %>% 
+  ggplot(aes(x = temp, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) +
+  theme_bw() +
+  facet_grid(Y ~ X) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geography$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+Although there are more fires that burn more area in the mid-latitudes, they don't really seem to be driven by noticable differences in temperature. Any slight visual differences across facets seem well-accounted-for by noise.
+
+What about wind speed?
+
+```{r}
+plt <- m.geography %>% 
+  ggplot(aes(x = wind, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) +
+  theme_bw() +
+  facet_grid(Y ~ X) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geography$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+Earlier, when looking only at exploratory visualizations, I thought I saw wind did seem to interact with geography. However, now that I'm comparing to model predictions per geographic area, I'm not really seeing evidence of an interaction anymore.
+
+### Temporal factors
+
+Do we see seasonal effects if we look at burned area per month? We'll compare to our provisional model that's aware of geographical patterns.
+
+```{r}
+plt <- m.geography %>% 
+  ggplot(aes(x = month, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geography$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+I'm still seeing that month-of-the-year seems to influence the variance in log area burned. Let's add this to our model, and see if our fit improves.
+
+```{r}
+m.geo.month <- lognormal_model_check("log(area) ~ X*Y", "~ month", df)
+
+plt <- m.geo.month %>% 
+  ggplot(aes(x = month, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.month$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Now, we're doing much better at modeling the variance per month of the year. However, our model's predictions are also getting pulled down quite a lot by the subset of fires that burn almost no area. We might be able to account for these differences by including a variable in our model to account for the impacts of moisture. We'll try that soon. For now, we'll try filtering to remove these observations from our modeling dataset.
+
+```{r}
+df_nonzero <- df %>% filter(area > 0.01)
+
+m.geo.month_nonzero <- lognormal_model_check("log(area) ~ X*Y", "~ month", df_nonzero)
+
+plt <- m.geo.month_nonzero %>% 
+  ggplot(aes(x = month, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.month_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+This will make it much easier to see other ways in which our model might be wrong.
+
+What about day of the week? We might expect an effect if there are, e.g., more fires on weekends due to more outdoor recreation or fewer available firefighters.
+
+```{r}
+plt <- m.geo.month_nonzero %>% 
+  ggplot(aes(x = day, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.month_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Day of the week seems like it may actually matter more than I initially thought. Let's try adding day to our model.
+
+```{r}
+m.geo.month.day_nonzero <- lognormal_model_check("log(area) ~ X*Y + day", "~ month", df_nonzero)
+
+plt <- m.geo.month.day_nonzero %>% 
+  ggplot(aes(x = day, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), shape = "_", size = 5, color = "red", alpha = 0.7, position = position_nudge(x = 0.2)) +
+  geom_point(shape = "_", size = 5, color = "steelblue", alpha = 0.7, position = position_nudge(x = -0.2)) +
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.month.day_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+The fit is noticeably better!
+
+
+### Weather and climate factors
+
+Temperature in degrees Celsius.
+
+```{r}
+plt <- m.geo.month.day_nonzero %>% 
+  ggplot(aes(x = temp, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.month.day_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Similar to month of the year, we see more of an increase in variance with increasing temperatures and not so much of a change in average area burned. Let's add this to our variance submodel.
+
+```{r}
+m.geo.month.day.temp_nonzero <- lognormal_model_check("log(area) ~ X*Y + day", "~ month + temp", df_nonzero)
+
+plt <- m.geo.month.day.temp_nonzero %>% 
+  ggplot(aes(x = temp, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.month.day.temp_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Earlier we hypothesized that month-of-year impacts might be explained by temperature. Let's test this hypothesis with a model check.
+
+```{r}
+m.geo.day.temp_nonzero <- lognormal_model_check("log(area) ~ X*Y + day", "~ temp", df_nonzero)
+m.compare <- m.geo.day.temp_nonzero %>%
+  full_join(m.geo.month.day.temp_nonzero, by = c("X", "Y", "month", "day", "FFMC", "DMC", "DC", "ISI", "temp", "RH", "wind", "rain", "area", ".draw"))
+
+plt <- m.compare %>% 
+  ggplot(aes(x = temp, y = log(area))) +
+  geom_point(aes(y = log(prediction.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(prediction.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(. ~ month) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Seeing residuals might help here.
+
+```{r}
+plt <- m.compare %>% 
+  mutate(
+    res.x = log(area) - log(prediction.x),
+    res.y = log(area) - log(prediction.y)
+  ) %>%
+  ggplot(aes(x = temp)) +
+  geom_point(aes(y = log(res.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(res.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  theme_bw() +
+  facet_grid(. ~ month) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+It looks like a toss up between these two models. We should probably model variance in terms of month or temp, but not both.
+
+Relative humidity.
+
+```{r}
+plt <- m.geo.day.temp_nonzero %>% 
+  ggplot(aes(x = RH, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+As we suspected earlier, the impact of relative humidity is well accounted for by temperature.
+
+Wind speed in km/h.
+
+```{r}
+plt <- m.geo.day.temp_nonzero %>% 
+  ggplot(aes(x = wind, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Earlier I thought there was a weak effect of wind speed. Now I'm not so sure.
+
+Rain in mm/m2. 
+
+```{r}
+plt <- m.geo.day.temp_nonzero %>% 
+  ggplot(aes(x = rain, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+This looks pretty good with the fires that burn no area removed. What if we add them back in?
+
+```{r}
+m.geo.day.temp <- lognormal_model_check("log(area) ~ X*Y + day", "~ temp", df)
+
+plt <- m.geo.day.temp %>% 
+  ggplot(aes(x = rain, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+That's not looking so good anymore. We are underestimating fire danger on days with no rain. What if we let our model know about rainy days? We have so little data on rainy days, let's code them as binary.
+
+```{r}
+df <- df %>% 
+  mutate(
+    rainy = rain > 0.0
+  )
+
+m.geo.day.temp.rainy <- lognormal_model_check("log(area) ~ X*Y + day + rainy", "~ temp", df)
+
+plt <- m.geo.day.temp %>% 
+  ggplot(aes(x = rain, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.rainy$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+That's not looking much better. Unfortunately, we don't have any variables that distinguish cleanly between fires that burn no area and fires that do. We'll try using a few different models to see if we can do better, but we might be better off filtering out these no-area-burned observations.
+
+
+### Indicies for fire danger
+
+These indicators are explained [here](https://cwfis.cfs.nrcan.gc.ca/background/summary/fwi).
+
+Fine Fuel Moisture Code. This factor is highly correlated with rain. Let's see if our model that's aware of rainy days makes decent predictions.
+
+```{r}
+plt <- m.geo.day.temp.rainy %>% 
+  ggplot(aes(x = FFMC, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.rainy$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+We have the same issue as above, where the model probably does quite a bit better if we exclude the zero-area fires. We'll create a version of our rainy day model that excludes the zero-area fires.
+
+```{r}
+df_nonzero <- df_nonzero %>%
+  mutate(
+    rainy = rain > 0.0
+  )
+
+m.geo.day.temp.rainy_nonzero <- lognormal_model_check("log(area) ~ X*Y + day + rainy", "~ temp", df_nonzero)
+m.compare <- m.geo.day.temp_nonzero %>%
+  full_join(m.geo.day.temp.rainy_nonzero, by = c("X", "Y", "month", "day", "FFMC", "DMC", "DC", "ISI", "temp", "RH", "wind", "rain", "area", ".draw"))
+
+plt <- m.compare %>% 
+  ggplot(aes(x = FFMC, y = log(area))) +
+  geom_point(aes(y = log(prediction.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(prediction.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Looking better, and it doesn't seem to matter much whether our model knows about rainy days. There's just not enough information in that variable. It looks like maybe we could do slightly better if we model mean and variance in terms of FFMC, although this model may struggle to fit. FFMC may give better information than rain.
+
+FFMC model with zero-area fires.
+
+```{r}
+m.geo.day.temp.ffmc <- lognormal_model_check("log(area) ~ X*Y + day + FFMC", "~ temp + FFMC", df)
+
+plt <- m.geo.day.temp.ffmc %>% 
+  ggplot(aes(x = FFMC, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.ffmc$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+Better but still kinda terrible. Let's finally give up on the zero-area fires and figure out if we need to model impacts of FFMC on just variance or mean and variance of log(area).
+
+```{r}
+m.geo.day.temp.ffmcv_nonzero <- lognormal_model_check("log(area) ~ X*Y + day", "~ temp + FFMC", df_nonzero)
+m.geo.day.temp.ffmcmv_nonzero <- lognormal_model_check("log(area) ~ X*Y + day + FFMC", "~ temp + FFMC", df_nonzero)
+m.compare <- m.geo.day.temp.ffmcv_nonzero %>%
+  full_join(m.geo.day.temp.ffmcmv_nonzero, by = c("X", "Y", "month", "day", "FFMC", "DMC", "DC", "ISI", "temp", "RH", "wind", "rain", "area", ".draw"))
+
+plt <- m.compare %>% 
+  ggplot(aes(x = FFMC, y = log(area))) +
+  geom_point(aes(y = log(prediction.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(prediction.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+The model with FFMC predicting mean log(area) seems to do slightly worse if anything. Let's move on.
+
+Duff Moisture Code.
+
+```{r}
+plt <- m.geo.day.temp.ffmcv_nonzero %>% 
+  ggplot(aes(x = DMC, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.ffmcv_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+DMC seems weakly predictive of fires. Let's try adding it to our model.
+
+```{r}
+m.geo.day.temp.ffmcv.dmc_nonzero <- lognormal_model_check("log(area) ~ X*Y + day + DMC", "~ temp + FFMC", df_nonzero)
+m.compare <- m.geo.day.temp.ffmcv_nonzero %>%
+  full_join(m.geo.day.temp.ffmcv.dmc_nonzero, by = c("X", "Y", "month", "day", "FFMC", "DMC", "DC", "ISI", "temp", "RH", "wind", "rain", "area", ".draw"))
+
+plt <- m.compare %>% 
+  ggplot(aes(x = DMC, y = log(area))) +
+  geom_point(aes(y = log(prediction.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(prediction.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+The model with DMC predicting mean log(area) seems slightly better at high values of DMC.
+
+Draught Code. 
+
+```{r}
+plt <- m.geo.day.temp.ffmcv.dmc_nonzero %>% 
+  ggplot(aes(x = DC, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.ffmcv.dmc_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+This looks pretty good, although I think I see an opportunity to make it better. Notice the especially high and low values of log(area) at tge highest levels of DC. These points have been eluding prediction in every view, but here they stand out especially because the variance of log(area) seems to increase approximately linearly with DC, which I didn't even notice before I used a model check as a reference. Let's try adding this to our model.
+
+```{r}
+m.geo.day.temp.ffmcv.dmc.dc_nonzero <- lognormal_model_check("log(area) ~ X*Y + day + DMC", "~ temp + FFMC + DC", df_nonzero)
+m.compare <- m.geo.day.temp.ffmcv.dmc_nonzero %>%
+  full_join(m.geo.day.temp.ffmcv.dmc.dc_nonzero, by = c("X", "Y", "month", "day", "FFMC", "DMC", "DC", "ISI", "temp", "RH", "wind", "rain", "area", ".draw"))
+
+plt <- m.compare %>% 
+  ggplot(aes(x = DC, y = log(area))) +
+  geom_point(aes(y = log(prediction.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(prediction.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+The model with DC predicting variance seems to predict extreme values of log(area) slightly better.
+
+Initial Spread Index. This index is derived from FFMC and wind speed, so it's redundant with other, better predictors. Can we do without modeling its impact on area burned.
+
+```{r}
+plt <- m.geo.day.temp.ffmcv.dmc.dc_nonzero %>% 
+  ggplot(aes(x = ISI, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.ffmcv.dmc.dc_nonzero$.draw), fps = 2, width = 400, height = 300, res = 100, type = "cairo")
+```
+
+We're looking pretty good.
+
+### Re-re-examining geography
+
+Let's use our final model to triple check the interaction we thought we saw between wind speed and geography.
+
+```{r}
+plt <- m.geo.day.temp.ffmcv.dmc.dc_nonzero %>% 
+  ggplot(aes(x = wind, y = log(area))) +
+  geom_point(aes(y = log(prediction), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) +
+  theme_bw() +
+  facet_grid(Y ~ X) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.geo.day.temp.ffmcv.dmc.dc_nonzero$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+Now that we have a better reference model, I'm no longer seeing the impacts of wind within geographic regions as noise. Let's see if we can even fit a model where wind interacts with X and Y, and let's see if it makes better predictions.
+
+```{r}
+m.geo.day.temp.ffmcv.dmc.dc.wind_nonzero <- lognormal_model_check("log(area) ~ X*Y*wind + day + DMC", "~ temp + FFMC + DC", df_nonzero)
+m.compare <- m.geo.day.temp.ffmcv.dmc.dc_nonzero %>%
+  full_join(m.geo.day.temp.ffmcv.dmc.dc.wind_nonzero, by = c("X", "Y", "month", "day", "FFMC", "DMC", "DC", "ISI", "temp", "RH", "wind", "rain", "area", ".draw"))
+
+plt <- m.compare %>% 
+  ggplot(aes(x = wind, y = log(area))) +
+  geom_point(aes(y = log(prediction.x), group = .draw), size = 2, color = "red", alpha = 0.7) +
+  geom_point(aes(y = log(prediction.y), group = .draw), size = 2, color = "orange", alpha = 0.7) +
+  geom_point(size = 2, color = "steelblue", alpha = 0.7) +
+  theme_bw() +
+  facet_grid(Y ~ X) +
+  transition_states(.draw, 0, 1)
+
+animate(plt, nframes = max(m.compare$.draw), fps = 2, width = 800, height = 600, res = 100, type = "cairo")
+```
+
+The model that knows about different impacts of wind in different geographic areas does seem to make slightly better predictions in this view, insofar as it better captures small local variations and makes out-of-range predictions less often. For example, if you watch the HOPs, the red points tend to form a halo around the blue and orange ones.
+
+### Overview
+
+Our final model is `log(area) ~ X*Y*wind + day + DMC", "~ temp + FFMC + DC`. I'm not sure that I would expect every user to arrive at the same result, but I would expect them to notice some of these pattersn and to realize that certain predictors are redundant (e.g., rain and FFMC, or month, RH, and temp) or less informative than alternatives unimportant (e.g., rain, ISI).

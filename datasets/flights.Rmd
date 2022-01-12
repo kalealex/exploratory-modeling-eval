@@ -1,0 +1,137 @@
+---
+title: "Flights"
+author: "Alex Kale"
+date: "11/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(jsonlite)
+library(tidyverse)
+library(ggplot2)
+library(ggdist)
+```
+
+## Load dataset
+
+This is data on flight delays.
+
+```{r}
+df <- read_json("flights.json", simplifyVector = TRUE)
+
+head(df)
+```
+
+## Exploratory visualization
+
+Here we're seeing what we can reveal about the data generating process through exploratory visualization alone, with no modeling.
+
+This is the outcome variable we'd like to model, delay in flight arrival.
+
+```{r}
+df %>% ggplot(aes(x = delay)) +
+  stat_slab(slab_type = "histogram") +
+  geom_point(aes(y = 0), shape = "|", size = 5, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Let's separate this out by destination to see if we notice any patterns.
+
+```{r}
+df %>% ggplot(aes(x = delay, y = reorder(destination, desc(destination)))) +
+  geom_point(shape = "|", size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+I'm noticing that some destinations have a thick tail if delays less than an hour, e.g., BWI, DAL, HOU, LAS, LAX, MDW, OAK, PHX, and SAN. It's hard to say what the common factor could be. However, most of these distributions seem to have more observations overall, including many flights that arrive on time or early, suggesting that these are busy airports. 
+
+What if we look at the same plot for flight origins?
+
+```{r}
+df %>% ggplot(aes(x = delay, y = reorder(origin, desc(origin)))) +
+  geom_point(shape = "|", size = 2, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+It's mostly the same airports that stand out to me in this chart, suggesting this is mostly a visual index for overall airport traffic.
+
+What if we look at delays as a function of distance?
+
+```{r}
+df %>% 
+  ggplot(aes(x = distance, y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Let's make that log(distance) to spread out the points in the x-axis.
+
+```{r}
+df %>% ggplot(aes(x = log(distance), y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+It looks like the vast majority of delays longer than an hour are for mid-range flights. This might be something a model with an indicator variable could capture.
+
+What about impacts of time? We might expect to see some seasonality.
+
+```{r}
+df %>% ggplot(aes(x = date, y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+This looks like there are some promising patterns, but we'll need to parse the dates into components before we can do much more.
+
+```{r}
+df <- df %>%
+  separate(date, c("year", "month", "day"), "/", extra = "merge") %>%
+  separate(day, c("day", "time"), " ")
+
+head(df)
+```
+
+If we're seeing seasonality in the chart above, each year should be about the same on the margin. Let's check this visually by separating flight delays per year.
+
+```{r}
+df %>% ggplot(aes(x = year, y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+All of our flights are from one year, so that means the pattern we're seeing above is likely finer grained than seasonality. Still, let's separate these out by month to see if there are salient differences.
+
+```{r}
+df %>% ggplot(aes(x = month, y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+Well, we only have data from Jan-Mar, so this rules out any sort of interesting analysis of seasonality.
+
+The only thing left to do that I can think of is look at time of day.
+
+```{r}
+df %>% ggplot(aes(x = time, y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw()
+```
+
+This is interesting, flights seems somewhat more likely to arrive late when they arrive late at night. It's hard to say if this is caused only by the clear increase in variance for flights later in the day, or if there is also a slight shift inflight delays on average.
+
+I wonder if this time-of-day effect interacts with the mid-distance effect we noticed earlier.
+
+```{r}
+df <- df %>% 
+  mutate(middistance = (distance > 150 & distance < 1000))
+
+df %>% ggplot(aes(x = time, y = delay)) +
+  geom_point(size = 1, color = "steelblue", alpha = 0.7) + 
+  theme_bw() +
+  facet_grid(. ~ middistance)
+```
+
+Interesting. Most of the flights that arrive late at night are mid-distance flights (150-1000 miles). This means we'll probably struggle to model and interaction of arrival time with distance. Although we have successfully identified the subset of flights with the longest delays.
+
