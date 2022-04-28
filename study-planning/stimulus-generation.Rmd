@@ -1,7 +1,7 @@
 ---
 title: "Stimulus generation"
 author: "Alex Kale"
-date: "3/10/2022"
+date: "`r Sys.Date()`"
 output: html_document
 ---
 
@@ -24,29 +24,30 @@ select <- dplyr::select
 
 ## Overview
 
-In this document, we set out to create standalone datasets with a known data generating process for each trial of our experiment. We load in seed datasets and use them to generate fake data. To create each stimulus, we select predictors from these seed datasets and rename the variables in order to get realistic looking data distributions. For each set of variables selected, we then create a fake data generating process (DGP) based on the way that parameterized regression models make predictions. We manipulate the parameters of this DGP to control the difficulty of the task. We use predictions from these DGPs as the fake outcome variables for each stimulus dataset. This procedure enables us to create realistic looking datasets with known data generating processes to use in our experiment.
+In this document, we set out to create standalone stimulus datasets with a known data generating process for each trial of our experiment. We generate fake datasets for two trial types, in one trial type using a real dataset to seed the relationship between month and temperature in order to get realistic looking data distributions. The other trial type is completely synthetic. For each set of predictor variables selected/generated, we then create a fake data generating process (DGP) based on the way that parameterized regression models make predictions. We manipulate the parameters of this DGP to control the difficulty of the task. We use predictions from these DGPs as the fake outcome variables for each stimulus dataset. This procedure enables us to create realistic looking datasets with known data generating processes to use in our experiment.
 
 ### Synthetic relationships and task
 
 Creating the fake data generating process (DGP) entails inventing synthetic relationships in the data to ask participants to assess in our experiment. For example, we will ask participants questions like, "How many tokens out of 100 would you bet that there is an influence of X on Y?" providing instructions like, "Betting 0 indicates certainty that there is no relationship. Betting 100 indicates certainty that there is a relationship. Betting 50 indicates maximum uncertainty." To increase statistical power in a small number of trials, we will also elicit uncertainty in bets by asking questions like, "If you had to make this bet 100 times, how many times would you bet between `initial_bet +- interval`?" 
 
-I call the specific relationships we ask about "information conditions". Specifically, we create the following _information conditions_:
+I call the specific relationships we ask about "trial types". Specifically, we create the following _trial types_:
 
  * Main effect of `ad_campaign` on `sales` 
  * Direct effect of `temp` on `sales` with `month` as a confounding variable
 
-Across these information conditions, we match the datasets we generate in terms how difficult they are to detect/judge. We will use [causal support](https://arxiv.org/abs/2107.13485) as a proxy for task difficulty.
+Across these trial types, we match the datasets we generate in terms how difficult they are to detect/judge. We will use [causal support](https://arxiv.org/abs/2107.13485) as a proxy for task difficulty.
 
-These information conditions will be crossed with "model check conditions". These are different ways of presenting the synthetic relationships in question:
+These trial types will be crossed with "model check conditions". These _model check conditions_ are different ways of presenting the synthetic relationships in question:
 
  * Data only, no model checks showing predictions alongside data
- * Model checks showing predictions from a properly specified model alongside data
- * Model checks showing predictions from a mis-specified model
+ * Theoretically ideal model checks showing predictions from a well-specified model, _not including_ the target relationship `ad_campaign` or `temp`, alongside data
+ * Potentially misleading model checks showing predictions from a mis-specified model, ignoring a known/synthetic/fixed nuisance effect in the DGP (see below), alongside data
+ * Alternative model checks showing predictions from a well-specified model, _including_ the target relationship `ad_campaign` or `temp`, alongside data
  
-In the case where the model check is mis-specified, it will be missing a variance effect in the information condition where the user judges a "Main effect of `ad_campaign` on `sales`," whereas the mis-specified models will not include the effect of the mediating or confounding variables in the other information conditions.
+In the case where the model check is mis-specified, it will be missing a _variance effect_ of `ad_campaign` on `sales` in the `ad_campaign` trial type, whereas the mis-specified models will not include a _confounding effect_ of `month` on `sales` in the `temp` trial type. In both cases, mis-specifying the reference model we show to participants could be misleading. This condition represents a possible failure mode of model checks, where earlier misinterpretations accrue through the reference model and interfere with the framing of later judgments of DGP.
 
 
-## Load seed datasets
+## Load seed dataset
 
 This is data on the area of land burned in forest fires in the northeast region of Portugal.
 
@@ -66,38 +67,8 @@ df.fires <- read_csv("../datasets/forestfires.csv") %>%
 
 head(df.fires)
 ```
+We will use this dataset to seed the relationship between `month` and `temp` for our `temp` trial type.
 
-This is data on student absences in two schools in Portugal.
-
-```{r}
-# load math and language class data separately
-df_mat <- read.table("../datasets/student-mat.csv", sep=";", header=TRUE) %>%
-  dplyr::select(-one_of(c("G1","G2"))) %>%
-  mutate(topic = "math")
-df_lan <- read.table("../datasets/student-por.csv", sep=";", header=TRUE) %>%
-  dplyr::select(-one_of(c("G1","G2"))) %>%
-  mutate(topic = "language")
-
-# join into one dataset for analysis
-df.absences <- df_mat %>%
-  full_join(df_lan, by = c("school","sex","age","address","famsize","Pstatus","Medu","Fedu","Mjob","Fjob","reason","guardian","traveltime","studytime","failures","schoolsup","famsup","paid","activities","nursery","higher","internet","romantic","famrel","freetime","goout", "Dalc","Walc","health","absences","G3","topic")) %>%
-  mutate(
-    address = if_else(address=="U", "urban", "rural"),
-    Pstatus = if_else(Pstatus=="A", "separated", "together")
-  ) %>%
-  filter(absences != 0) %>%
-  mutate(
-    # absences = if_else(absences == 0,
-    #                    0.01,
-    #                    as.double(absences)),
-    log_absences = log(as.double(absences))
-  ) %>%
-  rename(
-    final_grade = G3
-  )
-
-head(df.absences)
-```
 
 ## Create a function to calculate causal support for a given dataset and set of models
 
@@ -207,7 +178,7 @@ Now, we are ready to label the difficulty of judging the synthetic relationships
 
 ## Create a modelcheck function to add model predictions to an input dataframe
 
-In this study, we are investigating the utility of showing model predictions alongside real data for helping analysts reason about data generating process. This function adds predictions from a specified linear model to an input dataframe, enabling us to add model predictions for some stimuli.
+In this study, we are investigating the utility of showing model predictions alongside real data for helping analysts reason about data generating process. This function adds predictions from a specified linear model to an input dataframe, enabling us to add model predictions for some stimuli. This function comes from the `modelcheck` R package, a custom implementation of model checks created for this project to run models on an R server and push their predictions to the browser.
 
 ```{r}
 modelcheck <- function(mu_spec, sigma_spec = "~1", data) {
@@ -273,7 +244,7 @@ Now we can add model predictions to our synthetic datasets.
 
 ## Create synthetic datasets
 
-Here, we pass selected variables through a process that mimics a regression model with known parameters. It takes part of a real dataset with renamed variables as an input and uses that dataset in combination with some distributional assumptions and hardcoded effect sizes to generate a realistic-looking fake dataset for us to use in our experiment. We will use a similar approach to create a standalone DGP for each stimulus.
+Here, we pass selected variables through a process that mimics a regression model with known parameters. It takes predictor variables as an input and uses some distributional assumptions and hardcoded effect sizes to generate realistic-looking fake datasets for us to use in our experiment. We will use a similar approach to create a standalone DGP for each stimulus.
 
 We'll start by defining some hard coded effect sizes that we will use for stimulus generation. These are extrapolated from Cohen's large and small effect sizes to generate three approximately matched levels of the strength of relationship (note: we rely on causal support for formal matching, so sampling at these effect sizes merely serve to get us in the ballpark of the desired levels of task difficulty). We have separate ways of encoding effect size for categorical effects (i.e., Cohen's d) vs continuous effects (Peason's r).
 
@@ -298,7 +269,7 @@ vanishing.var <- 0.0015
 r.squared <- 0.9
 ```
 
-Last, we'll set a sample size, so that we can control the amount of evidence we are showing for these different relationships. We control sample size rather than manipulating it because prior work has shown people are insensitive to sample size for this kind of judgment, and we have no reason to believe that model check would impact this
+Last, we'll set a sample size, so that we can control the amount of evidence we are showing for these different relationships. We control sample size rather than manipulating it because prior work has shown people are insensitive to sample size for this kind of judgment, and we have no reason to believe that model check would impact this.
 
 ```{r}
 sample.size <- 150
@@ -310,46 +281,39 @@ Now we're ready to create some fake datasets.
 
 We'll set up data about fake advertising campaigns to test how well people can judge simple main effects. In each of these ad campaign DGPs, the outcome variable will be `sales`, and the single predictor with two levels will be `ad_campaign`. These trials represent the simplest possible relationships that could be evaluated
 
-To seed our ad campaign stimuli, we'll use the `Fedu` variable from the student absences dataset which originally represents a father's level of education. The fact that these data come from a different domain than `sales ~ ad_campaign` doesn't really concern us because we are just borrowing them to get realistically distributed predictors.
-
-```{r}
-df.ad <- df.absences %>% select(Fedu)
-```
-
-#### Humorous vs informative ads
-
-For the humorous vs traditional ads we'll select two levels of `Fedu`.
+We will sample from two advertising campaigns, using a binomial distribution to create two groups of approximately equal size. The predictor `ad_campaign` is completely synthetic.
 
 ```{r}
 # select variables
-df.ad <- df.ad %>%
-  filter(Fedu %in% c(2, 3)) %>%
+df.ad <- tibble(
+    p = list(0.5)
+  ) %>%
+  mutate(
+    ad_campaign = map(p, ~rbinom(100*sample.size, 1, .))
+  ) %>%
+  unnest(cols = c(p, ad_campaign)) %>%
   mutate(
     ad_campaign = case_when(
-      Fedu == 2 ~ 'informative',
-      Fedu == 3 ~ 'humorous'
+      ad_campaign == 0 ~ 'informative',
+      ad_campaign == 1 ~ 'humorous'
     )
   ) %>%
   select(ad_campaign)
 
 head(df.ad)
 ```
-```{r}
-any(is.na(df.ad$ad_campaign))
-```
 
-For each level of effect size we want to generate fake datasets for, we'll follow the following steps:
+For each level of effect size that we want to generate fake datasets for, we'll follow the following steps:
 
- 1. Resample from the seed dataset.
- 2. Calculate location and scale parameters `mu` and `sigma` for each observation in the seed dataset using fake parameters we plant in the DGP
- 3. Use the resulting location and scale parameters to generate 50 fake datasets.
- 4. Assign causal support values to each of these datasets.
+ 1. *Resample from the seed dataset.* This will entail selecting 150 observations to use as predictors in each stimulus dataset. For the `ad_campaign` trial type, we'll resample from our binomial process. For the `temperature` trial type, we'll resample from the forestfirest dataset we loaded earlier.
+ 2. *Calculate location and scale parameters `mu` and `sigma` for each observation.* This entails defining fake parameters to set up a data generating process (DGP) that resembles a regression model. Similar to making predictions from a regression models, we will use these fake parameters to calculate conditional estimates of the location `mu` and scale `sigma` of outcomes for each observation.
+ 3. *Use location and scale estimates to generate fake outcomes.* For each observation in the dataset, we have conditional location `mu` and scale `sigma` estimates from the previous step. Now we pass these parameters through a Gaussian random number generator to compute synthetic outcomes `sales` associated with each observation we sampled in step 1. We will simulate 50 synthetic outcomes `sales` for each observation, generating a distribution of possible outcomes (which we will choose from later, see step 5). 
+ 4. *Assign causal support values to each of these datasets.* For each set of possible simulated outcomes `sales` we generated in step 3, we run an algorithm to compute causal support. Causal support rates the posterior log odds that a target claim is true about a given dataset, or basically, how much participants in the study should believe that "Ad campaign has an impact on sales" on the `ad_campaign` trials or that "Temperature has an impact on sales after accounting for the impact of month on sales." on the `temp` trials. 
+ 5. *Filter down to a handful of synthetic datasets with matching levels of causal support.* Usuing causal support as a measure of the difficulty of assessing the target claim on each trial, we take all of the fake datasets we generated and filter them based on proximity to the following values of `logistic(causal_support)`, {0.2, 0.4, 0.6, 0.8}. The idea is to generate a set of stimuli datasets where the target claim is easier to reject (0.2) or accept (0.8) and more difficult to reject (0.4) or accept (0.6). These represent the desired levels of task difficulty.
 
-We subsequently will filter down to a handful of fake datasets where causal support is close to 0.55, 0.75, and 0.95, respectively, representing three desired levels of task difficulty.
+To start we must choose an arbitrary standard deviation for our outcome variable `sales` as well as arbirary intercepts for the `mu` and `sigma` submodels. The code block below runs steps 1-4.
 
-To start we must choose an arbitrary standard deviation for our outcome variable `sales` as well as arbirary intercepts for the `mu` and `sigma` submodels.
-
-```{r}
+```{r echo = TRUE, warning=FALSE, results = 'hide'}
 # settings arbitrarily chosen to place outcomes in a believable domain
 # getting these right is a matter of guess and check
 sd <- 1000 # sd for baseline/reference group
@@ -429,14 +393,14 @@ for (i in 1:length(cohens.d)) {
 head(datasets.ad)
 ```
 
-Causal support for the relationship of interest represents a log odds transform of the normative probability that the target relationship is part of the data generating process. In this information condition, this is how a rational Bayesian agent would rate the probability of the following claim:
+Causal support for the relationship of interest represents a log odds transform of the normative probability that the target relationship is part of the data generating process. In this trial type, this is how a rational Bayesian agent would rate the probability of the following claim:
 
 _"Ad campaign has an impact on sales."_
 
-Now, we'll pick 3 fake datasets per level of task difficulty (one dataset to show for each modelcheck condition), resulting in 9 datasets total for this information condition
+Now, we'll pick 4 fake datasets per level of task difficulty (one dataset to show for each modelcheck condition), resulting in 12 datasets total for this trial type.
 
-```{r}
-target_normative_response <- c(0.55, 0.75, 0.95)
+```{r echo = TRUE, warning=FALSE, results = 'hide'}
+target_normative_response <- c(0.2, 0.4, 0.6, 0.8)
 save_datasets <- list()
 
 for (i in 1:length(target_normative_response)) {
@@ -445,7 +409,7 @@ for (i in 1:length(target_normative_response)) {
     mutate(
       diff_from_target = abs(target_normative_response[i] - normative_belief)
     ) %>%
-    slice_min(diff_from_target, n = 3) %>%
+    slice_min(diff_from_target, n = 4) %>%
     select(causal_support, normative_belief, data)
   
   # add correctly specified model check to second selected dataset
@@ -464,19 +428,26 @@ for (i in 1:length(target_normative_response)) {
     ) %>% 
     nest(data = everything())
   
+  # add alternative model check to fourth selected dataset
+  selected_datasets[4, "data"] <- modelcheck(
+      "sales ~ ad_campaign",      # model target relationship
+      "~ad_campaign",       
+      unnest(selected_datasets[4, "data"], cols = c(data))
+    ) %>% 
+    nest(data = everything())
+  
   # create the data structure we want
-  save_datasets[[paste("dataonly", target_normative_response[i], "main",  sep = "_")]] <- selected_datasets[1,]
-  save_datasets[[paste("modelcheck", target_normative_response[i], "main", sep = "_")]] <- selected_datasets[2,]
-  save_datasets[[paste("misspec", target_normative_response[i], "main", sep = "_")]] <- selected_datasets[3,] 
+  save_datasets[[paste("dataonly", target_normative_response[i]*100, "main",  sep = "_")]] <- selected_datasets[1,]
+  save_datasets[[paste("modelcheck", target_normative_response[i]*100, "main", sep = "_")]] <- selected_datasets[2,]
+  save_datasets[[paste("misspec", target_normative_response[i]*100, "main", sep = "_")]] <- selected_datasets[3,] 
+  save_datasets[[paste("altcheck", target_normative_response[i]*100, "main", sep = "_")]] <- selected_datasets[4,] 
 }
 ```
 
 
-### Interaction effects
+### Interaction effects with confouding
 
 We'll set up synthetic dataset to test how well people can judge interaction effects. In each of these DGPs, there will be two correlated predictors (`month` and `temp`) representing a confounding "backdoor path" for the direct relationship the participant will be asked to judge. The purpose of these trails is to investigate more complex relationships that the analyst must build a more sophisticated interpretation of. By manipulating the veracity of prior knowledge they are given about the backdoor path (i.e., by mis-specifying the model check so that it doesn't account for confounding on some trials), we can investigate how robust model checks are to reference model mis-specification compared to how robust EDA is to inaccurate prior knowledge. This is important to examine because part of the purpose of model checks is making these provisional data interpretations explicit to support cumulative judgments of DGP.
-
-#### Effect of temperature on sales after controlling for month (confounding)
 
 For this dataset we'll just take the `month` and `temp` predictors directly from the forestfires dataset. We don't need to rename them.
 
@@ -492,14 +463,15 @@ We'll follow a similar procedure as before for dataset generation:
 
  1. Resample from the seed dataset.
  2. Calculate location and scale parameters `mu` and `sigma` for each observation in the seed dataset using fake parameters we plant in the DGP
- 3. Use the resulting location and scale parameters to generate 50 fake datasets.
+ 3. Use the resulting location and scale parameters to generate 50 outcomes per dataset in step 1.
  4. Assign causal support values to each of these datasets.
+ 5. Filter down to a handful of fake datasets where causal support is close to 0.2, 0.4, 0.6, and 0.8, respectively.
+ 
+See the rationale and fleshed out description for each of these steps above.
 
-We subsequently will filter down to a handful of fake datasets where causal support is close to 0.55, 0.75, and 0.95, respectively, representing three desired levels of task difficulty.
+Again, we must choose an arbitrary standard deviation for our outcome variable `sales` as well as arbirary intercepts for the `mu` and `sigma` submodels. The code block below implements steps 1-4.
 
-Again, we must choose an arbitrary standard deviation for our outcome variable `sales` as well as arbirary intercepts for the `mu` and `sigma` submodels.
-
-```{r}
+```{r echo = TRUE, warning=FALSE, results = 'hide'}
 # settings arbitrarily chosen to place outcomes in a believable domain
 # getting these right is a matter of guess and check
 sd <- 70 # sd for baseline/reference group
@@ -539,7 +511,7 @@ for (i in 1:length(pearsons.r)) {
         ) + 
         temp * pearsons.r[i] * sd / temp.sd, # temp effect on mu
       log_sigma = log(sigma.intercept) +
-        log(temp) * vanishing.var * sd,      # temp effect on sigma,
+        log(temp) * vanishing.var * log(sd),      # temp effect on sigma,
       sigma = exp(log_sigma)
     )
   
@@ -590,20 +562,20 @@ for (i in 1:length(pearsons.r)) {
 head(datasets.month.temp)
 ```
 
-In this information condition, causal support provides a benchmark of how a rational Bayesian agent would rate the probability of the following claim:
+In this trial type, causal support provides a benchmark of how a rational Bayesian agent would rate the probability of the following claim:
 
 _"Temperature has an impact on sales (after accounting for the impact of month on sales)."_
 
-Now, we'll pick 3 fake datasets per level of task difficulty (one dataset to show for each modelcheck condition), resulting in 9 datasets total for this information condition.
+Now, we'll pick 4 fake datasets per level of task difficulty (one dataset to show for each modelcheck condition), resulting in 12 datasets total for this trial type.
 
-```{r}
+```{r echo = TRUE, warning=FALSE, results = 'hide'}
 for (i in 1:length(target_normative_response)) {
   # select generated datasets closest to target causal support
   selected_datasets <- datasets.month.temp %>%
     mutate(
       diff_from_target = abs(target_normative_response[i] - normative_belief)
     ) %>%
-    slice_min(diff_from_target, n = 3) %>%
+    slice_min(diff_from_target, n = 4) %>%
     select(causal_support, normative_belief, data)
   
   # add correctly specified model check to second selected dataset
@@ -622,18 +594,35 @@ for (i in 1:length(target_normative_response)) {
     ) %>% 
     nest(data = everything())
   
+  # add alternative model check to fourth selected dataset
+  selected_datasets[4, "data"] <- modelcheck(
+      "sales ~ month*temp",          # model target relationship
+      "~temp",
+      unnest(selected_datasets[4, "data"], cols = c(data))
+    ) %>% 
+    nest(data = everything())
+  
   # create the data structure we want
-  save_datasets[[paste("dataonly", target_normative_response[i], "interaction",  sep = "_")]] <- selected_datasets[1,]
-  save_datasets[[paste("modelcheck", target_normative_response[i], "interaction", sep = "_")]] <- selected_datasets[2,]
-  save_datasets[[paste("misspec", target_normative_response[i], "interaction", sep = "_")]] <- selected_datasets[3,] 
+  save_datasets[[paste("dataonly", target_normative_response[i]*100, "interaction",  sep = "_")]] <- selected_datasets[1,]
+  save_datasets[[paste("modelcheck", target_normative_response[i]*100, "interaction", sep = "_")]] <- selected_datasets[2,]
+  save_datasets[[paste("misspec", target_normative_response[i]*100, "interaction", sep = "_")]] <- selected_datasets[3,] 
+  save_datasets[[paste("altcheck", target_normative_response[i]*100, "interaction", sep = "_")]] <- selected_datasets[4,] 
 }
 ```
 
-Save datasets. We'll push these synthetic datasets to Firebase and query them by information condition name on the fly in order to run our experiment in a custom web application.
+Save datasets. We'll push these synthetic datasets to Firebase and query them by trial type name on the fly in order to run our experiment in a custom web application.
 
 ```{r eval=FALSE}
 # save datasets as json (ready to upload to firebase)
 write(toJSON(save_datasets), "stimuli.json")
 ```
 
+
+<!-- ## Select datasets for dissertation defense -->
+
+<!-- <!-- pick up here --> -->
+
+<!-- ```{r} -->
+
+<!-- ``` -->
 
