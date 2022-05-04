@@ -24,7 +24,7 @@ select <- dplyr::select
 
 ## Overview
 
-In this document, we set out to create standalone stimulus datasets with a known data generating process for each trial of our experiment. We generate fake datasets for two trial types, in one trial type using a real dataset to seed the relationship between month and temperature in order to get realistic looking data distributions. The other trial type is completely synthetic. For each set of predictor variables selected/generated, we then create a fake data generating process (DGP) based on the way that parameterized regression models make predictions. We manipulate the parameters of this DGP to control the difficulty of the task. We use predictions from these DGPs as the fake outcome variables for each stimulus dataset. This procedure enables us to create realistic looking datasets with known data generating processes to use in our experiment.
+In this document, we set out to create standalone stimulus datasets with a known data generating process for each trial of our experiment. We generate fake datasets for two trial types, in one trial type using a real dataset to seed the relationship between season and temperature in order to get realistic looking data distributions. The other trial type is completely synthetic. For each set of predictor variables selected/generated, we then create a fake data generating process (DGP) based on the way that parameterized regression models make predictions. We manipulate the parameters of this DGP to control the difficulty of the task. We use predictions from these DGPs as the fake outcome variables for each stimulus dataset. This procedure enables us to create realistic looking datasets with known data generating processes to use in our experiment.
 
 ### Synthetic relationships and task
 
@@ -33,7 +33,7 @@ Creating the fake data generating process (DGP) entails inventing synthetic rela
 I call the specific relationships we ask about "trial types". Specifically, we create the following _trial types_:
 
  * Main effect of `ad_campaign` on `sales` 
- * Direct effect of `temp` on `sales` with `month` as a confounding variable
+ * Direct effect of `temp` on `sales` with `season` as a confounding variable
 
 Across these trial types, we match the datasets we generate in terms how difficult they are to detect/judge. We will use [causal support](https://arxiv.org/abs/2107.13485) as a proxy for task difficulty.
 
@@ -44,7 +44,7 @@ These trial types will be crossed with "model check conditions". These _model ch
  * Potentially misleading model checks showing predictions from a mis-specified model, ignoring a known/synthetic/fixed nuisance effect in the DGP (see below), alongside data
  * Alternative model checks showing predictions from a well-specified model, _including_ the target relationship `ad_campaign` or `temp`, alongside data
  
-In the case where the model check is mis-specified, it will be missing a _variance effect_ of `ad_campaign` on `sales` in the `ad_campaign` trial type, whereas the mis-specified models will not include a _confounding effect_ of `month` on `sales` in the `temp` trial type. In both cases, mis-specifying the reference model we show to participants could be misleading. This condition represents a possible failure mode of model checks, where earlier misinterpretations accrue through the reference model and interfere with the framing of later judgments of DGP.
+In the case where the model check is mis-specified, it will be missing a _variance effect_ of `ad_campaign` on `sales` in the `ad_campaign` trial type, whereas the mis-specified models will not include a _confounding effect_ of `season` on `sales` in the `temp` trial type. In both cases, mis-specifying the reference model we show to participants could be misleading. This condition represents a possible failure mode of model checks, where earlier misinterpretations accrue through the reference model and interfere with the framing of later judgments of DGP.
 
 
 ## Load seed dataset
@@ -67,7 +67,7 @@ df.fires <- read_csv("../datasets/forestfires.csv") %>%
 
 head(df.fires)
 ```
-We will use this dataset to seed the relationship between `month` and `temp` for our `temp` trial type.
+We will use this dataset to seed the relationship between `month` (aggregated into `season`) and `temp` for our `temp` trial type.
 
 
 ## Create a function to calculate causal support for a given dataset and set of models
@@ -308,7 +308,7 @@ For each level of effect size that we want to generate fake datasets for, we'll 
  1. *Resample from the seed dataset.* This will entail selecting 150 observations to use as predictors in each stimulus dataset. For the `ad_campaign` trial type, we'll resample from our binomial process. For the `temperature` trial type, we'll resample from the forestfirest dataset we loaded earlier.
  2. *Calculate location and scale parameters `mu` and `sigma` for each observation.* This entails defining fake parameters to set up a data generating process (DGP) that resembles a regression model. Similar to making predictions from a regression models, we will use these fake parameters to calculate conditional estimates of the location `mu` and scale `sigma` of outcomes for each observation.
  3. *Use location and scale estimates to generate fake outcomes.* For each observation in the dataset, we have conditional location `mu` and scale `sigma` estimates from the previous step. Now we pass these parameters through a Gaussian random number generator to compute synthetic outcomes `sales` associated with each observation we sampled in step 1. We will simulate 50 synthetic outcomes `sales` for each observation, generating a distribution of possible outcomes (which we will choose from later, see step 5). 
- 4. *Assign causal support values to each of these datasets.* For each set of possible simulated outcomes `sales` we generated in step 3, we run an algorithm to compute causal support. Causal support rates the posterior log odds that a target claim is true about a given dataset, or basically, how much participants in the study should believe that "Ad campaign has an impact on sales" on the `ad_campaign` trials or that "Temperature has an impact on sales after accounting for the impact of month on sales." on the `temp` trials. 
+ 4. *Assign causal support values to each of these datasets.* For each set of possible simulated outcomes `sales` we generated in step 3, we run an algorithm to compute causal support. Causal support rates the posterior log odds that a target claim is true about a given dataset, or basically, how much participants in the study should believe that "Ad campaign has an impact on sales" on the `ad_campaign` trials or that "Temperature has an impact on sales after accounting for the impact of season on sales." on the `temp` trials. 
  5. *Filter down to a handful of synthetic datasets with matching levels of causal support.* Usuing causal support as a measure of the difficulty of assessing the target claim on each trial, we take all of the fake datasets we generated and filter them based on proximity to the following values of `logistic(causal_support)`, {0.2, 0.4, 0.6, 0.8}. The idea is to generate a set of stimuli datasets where the target claim is easier to reject (0.2) or accept (0.8) and more difficult to reject (0.4) or accept (0.6). These represent the desired levels of task difficulty.
 
 To start we must choose an arbitrary standard deviation for our outcome variable `sales` as well as arbirary intercepts for the `mu` and `sigma` submodels. The code block below runs steps 1-4.
@@ -447,16 +447,34 @@ for (i in 1:length(target_normative_response)) {
 
 ### Interaction effects with confouding
 
-We'll set up synthetic dataset to test how well people can judge interaction effects. In each of these DGPs, there will be two correlated predictors (`month` and `temp`) representing a confounding "backdoor path" for the direct relationship the participant will be asked to judge. The purpose of these trails is to investigate more complex relationships that the analyst must build a more sophisticated interpretation of. By manipulating the veracity of prior knowledge they are given about the backdoor path (i.e., by mis-specifying the model check so that it doesn't account for confounding on some trials), we can investigate how robust model checks are to reference model mis-specification compared to how robust EDA is to inaccurate prior knowledge. This is important to examine because part of the purpose of model checks is making these provisional data interpretations explicit to support cumulative judgments of DGP.
+We'll set up synthetic dataset to test how well people can judge interaction effects. In each of these DGPs, there will be two correlated predictors (`season` and `temp`) representing a confounding "backdoor path" for the direct relationship the participant will be asked to judge. The purpose of these trails is to investigate more complex relationships that the analyst must build a more sophisticated interpretation of. By manipulating the veracity of prior knowledge they are given about the backdoor path (i.e., by mis-specifying the model check so that it doesn't account for confounding on some trials), we can investigate how robust model checks are to reference model mis-specification compared to how robust EDA is to inaccurate prior knowledge. This is important to examine because part of the purpose of model checks is making these provisional data interpretations explicit to support cumulative judgments of DGP.
 
-For this dataset we'll just take the `month` and `temp` predictors directly from the forestfires dataset. We don't need to rename them.
+For this dataset we'll just take the `month` and `temp` predictors directly from the forestfires dataset. We will reduce the cardinality of the month variable by binning months into a new variable called `season`. Using seasons instead of months will make it easier to plot our model checks.
 
 ```{r}
 # select variables
-df.month.temp <- df.fires %>%
-  select(month, temp)
+df.temp <- df.fires %>%
+  mutate(
+    season = case_when( # reduce cardinality of month for better plots
+      month == "feb" ~ "winter", 
+      month == "mar" ~ "spring", 
+      month == "apr" ~ "spring", 
+      month == "may" ~ "spring", 
+      month == "jun" ~ "summer", 
+      month == "jul" ~ "summer", 
+      month == "aug" ~ "summer",
+      month == "sep" ~ "fall",
+      month == "oct" ~ "fall",
+      month == "nov" ~ "fall",
+      month == "dec" ~ "winter",
+      TRUE           ~ "winter" # case "jan"
+    ),
+    season = fct_relevel(season, "winter","spring","summer","fall"),
+  ) %>%
+  select(season, temp)
+  # select(month, temp)
 
-head(df.month.temp)
+head(df.temp)
 ```
 
 We'll follow a similar procedure as before for dataset generation:
@@ -480,35 +498,40 @@ mu.intercept <- 400
 sigma.intercept <- sqrt(sd^2 - res.sd^2) # assuming independence of learned sigma and residual sd
 
 # also need
-temp.sd <- sd(df.month.temp$temp)
+temp.sd <- sd(df.temp$temp)
 
 set.seed(44)
 n_sims <- 50
-datasets.month.temp <- tibble()
+datasets.temp <- tibble()
 
 for (i in 1:length(pearsons.r)) {
   # resample
-  dataset <- df.month.temp %>% sample_n(sample.size)
+  dataset <- df.temp %>% sample_n(sample.size)
   
-  # location and scale parameters for `sales ~ month*temp`
+  # location and scale parameters for `sales ~ season*temp`
   dataset <- dataset %>%
     rowwise() %>%
     mutate(
       mu = mu.intercept + 
-        case_when(       # month effect on mu
-          month == "feb" ~ -cohens.d[2] * sd, 
-          month == "mar" ~ 0.0, 
-          month == "apr" ~ 0.0, 
-          month == "may" ~ 0.0, 
-          month == "jun" ~ cohens.d[2] * sd, 
-          month == "jul" ~ cohens.d[2] * sd, 
-          month == "aug" ~ cohens.d[2] * sd,
-          month == "sep" ~ cohens.d[2] * sd,
-          month == "oct" ~ 0.0,
-          month == "nov" ~ 0.0,
-          month == "dec" ~ -cohens.d[2] * sd,
-          TRUE           ~ -cohens.d[2] * sd # case "jan"
+        case_when(       # season effect on mu
+          season == "winter" ~ -cohens.d[2] * sd, 
+          season == "summer" ~ cohens.d[2] * sd, 
+          TRUE               ~ 0.0 # case "spring", "fall"
         ) + 
+        # case_when(       # month effect on mu
+        #   month == "feb" ~ -cohens.d[2] * sd, 
+        #   month == "mar" ~ 0.0, 
+        #   month == "apr" ~ 0.0, 
+        #   month == "may" ~ 0.0, 
+        #   month == "jun" ~ cohens.d[2] * sd, 
+        #   month == "jul" ~ cohens.d[2] * sd, 
+        #   month == "aug" ~ cohens.d[2] * sd,
+        #   month == "sep" ~ cohens.d[2] * sd,
+        #   month == "oct" ~ 0.0,
+        #   month == "nov" ~ 0.0,
+        #   month == "dec" ~ -cohens.d[2] * sd,
+        #   TRUE           ~ -cohens.d[2] * sd # case "jan"
+        # ) + 
         temp * pearsons.r[i] * sd / temp.sd, # temp effect on mu
       log_sigma = log(sigma.intercept) +
         log(temp) * vanishing.var * log(sd),      # temp effect on sigma,
@@ -523,7 +546,8 @@ for (i in 1:length(pearsons.r)) {
       sales = list(rnorm(n_sims, mu, sigma) + rnorm(n_sims, 0, res.sd))
     ) %>%
     unnest(cols = c("draw", "sales")) %>%
-    select(month, temp, draw, sales)
+    select(season, temp, draw, sales)
+    # select(month, temp, draw, sales)
   
   # calculate causal support for each simulated dataset
   results <- tibble()
@@ -537,7 +561,8 @@ for (i in 1:length(pearsons.r)) {
     cs <- causal_support(
       d = use_data,
       outcome = "sales", 
-      predictors = list("month", "temp"), 
+      predictors = list("season", "temp"), 
+      # predictors = list("month", "temp"), 
       target_term ="temp",
       sigma_submodel = "~temp"
     )
@@ -556,22 +581,22 @@ for (i in 1:length(pearsons.r)) {
   }
   
   # append resulting datasets to output
-  datasets.month.temp <- bind_rows(datasets.month.temp, results)
+  datasets.temp <- bind_rows(datasets.temp, results)
 }
 
-head(datasets.month.temp)
+head(datasets.temp)
 ```
 
 In this trial type, causal support provides a benchmark of how a rational Bayesian agent would rate the probability of the following claim:
 
-_"Temperature has an impact on sales (after accounting for the impact of month on sales)."_
+_"Temperature has an impact on sales (after accounting for the impact of season on sales)."_
 
 Now, we'll pick 4 fake datasets per level of task difficulty (one dataset to show for each modelcheck condition), resulting in 12 datasets total for this trial type.
 
 ```{r echo = TRUE, warning=FALSE, results = 'hide'}
 for (i in 1:length(target_normative_response)) {
   # select generated datasets closest to target causal support
-  selected_datasets <- datasets.month.temp %>%
+  selected_datasets <- datasets.temp %>%
     mutate(
       diff_from_target = abs(target_normative_response[i] - normative_belief)
     ) %>%
@@ -580,7 +605,8 @@ for (i in 1:length(target_normative_response)) {
   
   # add correctly specified model check to second selected dataset
   selected_datasets[2, "data"] <- modelcheck(
-      "sales ~ month",
+      "sales ~ season",
+      # "sales ~ month",
       "~temp",
       unnest(selected_datasets[2, "data"], cols = c(data))
     ) %>% 
@@ -596,7 +622,8 @@ for (i in 1:length(target_normative_response)) {
   
   # add alternative model check to fourth selected dataset
   selected_datasets[4, "data"] <- modelcheck(
-      "sales ~ month*temp",          # model target relationship
+      "sales ~ season*temp",          # model target relationship
+      # "sales ~ month*temp",          # model target relationship
       "~temp",
       unnest(selected_datasets[4, "data"], cols = c(data))
     ) %>% 
@@ -618,11 +645,133 @@ write(toJSON(save_datasets), "stimuli.json")
 ```
 
 
-<!-- ## Select datasets for dissertation defense -->
+## Select datasets for dissertation defense
 
-<!-- <!-- pick up here --> -->
+### RQ1: Do well-specified model checks help users assess claims about target relationships in a dataset?
 
-<!-- ```{r} -->
+Ad campaign trials.
 
-<!-- ``` -->
+```{r}
+test <- save_datasets[[paste("dataonly", target_normative_response[4]*100, "main",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  ggplot(aes(x = ad_campaign, y = sales)) +
+  geom_point(shape = "_", color = "steelblue", size  = 5) +
+  theme_minimal()
+```
+
+```{r}
+test <- save_datasets[[paste("modelcheck", target_normative_response[4]*100, "main",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.2)) +
+  theme_minimal()
+```
+
+Temperature trials.
+
+```{r}
+test <- save_datasets[[paste("dataonly", target_normative_response[4]*100, "interaction",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  ggplot(aes(x = temp, y = sales)) +
+  geom_point(color ="steelblue") +
+  theme_minimal() +
+  facet_grid(. ~ season)
+```
+
+```{r}
+test <- save_datasets[[paste("modelcheck", target_normative_response[4]*100, "interaction",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = temp, y = sales, color = modelcheck_group)) +
+  geom_point() +
+  theme_minimal() +
+  facet_grid(. ~ season)
+# write(toJSON(test), "modelcheck.json")
+```
+
+### RQ2: Do mis-specified model checks lead to misinterpretations of DGP?
+
+Missing variance effect.
+
+```{r}
+test <- save_datasets[[paste("misspec", target_normative_response[4]*100, "main",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.2)) +
+  theme_minimal()
+```
+
+Missing confounding effect.
+
+```{r}
+test <- save_datasets[[paste("misspec", target_normative_response[4]*100, "interaction",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = temp, y = sales, color = modelcheck_group)) +
+  geom_point() +
+  theme_minimal() +
+  facet_grid(. ~ season)
+# write(toJSON(test), "misspec.json")
+```
+
+### RQ3: Should the framing of a model check depend on whether the target claim appears to be true? 
+
+Traditional model check, target relationship not in model.
+
+```{r}
+test <- save_datasets[[paste("modelcheck", target_normative_response[4]*100, "main",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.2)) +
+  theme_minimal()
+```
+
+Not including the target relationship in the reference model might not work as well when the target relationship is likely false. This becomes a judgment of similarity between data and model predictions, rather than a judgment of discrepancy.
+
+```{r}
+test <- save_datasets[[paste("modelcheck", target_normative_response[1]*100, "main",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.2)) +
+  theme_minimal()
+```
+
+In these cases where the user would like to reject the target claim, it might help to use an alternative configuration of model checks which shows what it would look like if the target relationship were true.
+
+```{r}
+test <- save_datasets[[paste("altcheck", target_normative_response[1]*100, "main",  sep = "_")]]
+test <- as.data.frame(test$data)
+
+test %>%
+  filter(draw == 1) %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.2)) +
+  theme_minimal()
+```
+
+
+
+
+
+
 
