@@ -1,0 +1,586 @@
+---
+title: "Model check conditions explainer"
+author: "Alex Kale"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(magrittr)
+library(forcats)
+library(ggplot2)
+library(ggdist)
+library(gganimate)
+library(gamlss)
+select <- dplyr::select
+```
+
+
+## Overview
+
+This document walks through the model check conditions I propose to test in our experiment, using a simple synthetic dataset as a running example.
+
+These _model check conditions_ are different ways of presenting visual tests for a target relationship in a given dataset:
+
+ * *Data only*, no model checks showing predictions alongside data
+ * *Fitted, well-specified model checks*, where reference models are fitted to the data and correctly reflect the true data generating process (DGP)
+ * *Fitted, mis-specified model checks*, where reference models are fitted to the data but ignore a known relationship in the DGP that distracts from the target relationship
+ * *Non-fitted model checks*, where the reference models are not fitted to the data but instead parameters in the model are drawn from a weakly informative prior
+
+To demonstrate each of these different conditions, we will generate a fake dataset with a known DGP where sales are measured under two different advertising campaigns.
+
+
+## Create a function to calculate causal support for a given dataset
+
+Causal support is a Bayesian cognitive model that calculates the posterior probability of one set of explanations/models vs another set of explanations/models for a given dataset. 
+
+In this example, we want to calculate how much a rational Bayesian agent would believe that a particular advertisement influences sales. We calculate causal support `cs` for this claim based on the log likelihood `ll` of the data `d` under two different models with `sales ~ ad` and without `sales ~ 1` the effect of advertisement:
+
+```
+cs =                                     # causal support is a Bayesian update in log odds units:
+  [ll(d|sales ~ ad) - ll(d|sales ~ 1)] + # log likelihood ratio
+  [log(0.5) - log(0.5)]                  # log ratio of priors
+```
+
+The function below runs this calculation and returns causal support in log odds units. 
+
+```{r}
+causal_support_ad <- function(d) {
+  # function to calculate log likelihood of data for a given model (assuming Gaussian distribution)
+  loglik <- function(target_effect = FALSE, df) {
+    # summary statistics for prior setting
+    sim_n <- 10000
+    deg_free <- length(df$sales) - 1
+    sample_min <- min(df$sales) 
+    sample_max <- max(df$sales)
+    sample_var <- var(df$sales)
+    
+    # sample parameters for model
+    mu_intercept <- runif(sim_n, sample_min, sample_max)
+    if (target_effect) {
+      # assume mean diff
+      mu_diff <- runif(sim_n, -(sample_max - sample_min), sample_max - sample_min)
+    } else {
+      # assume null mean diff
+      mu_diff <- rep(0, sim_n)
+    }
+    # scaled inv chi squared dist is conjugate prior for sigma of normal distribution
+    sigma_intercept <- sqrt(deg_free * sample_var / rchisq(sim_n, deg_free, 0)) 
+    # variance effects are multiplicative and can be larger for datasets with larger overall variance
+    logsigma_diff <- rnorm(sim_n, 0, log(sqrt(sample_var)))
+    
+    # run parameter values through a regression model to generate expected mu and sigma for each observation
+    output <- df %>%
+      mutate(
+        draw = list(seq(from = 1, to = sim_n, by = 1)),
+        mu = case_when(
+          ad_campaign == "informative" ~ list(mu_intercept),
+          ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
+        ),
+        sigma = case_when(
+          ad_campaign == "informative" ~ list(sigma_intercept),
+          ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+        )
+      ) %>%
+      unnest(cols = c("draw", "mu", "sigma"))
+    
+    # use sampling dist of expected mu and sigma for each observed data point to assign 
+    # likelihood of the dataset under each simulation run
+    output %>%
+      rowwise() %>%
+      mutate(
+        elpd_per_obs_per_run = dnorm(sales, mu, sigma, log = TRUE)
+      ) %>% 
+      group_by(draw) %>%
+      summarise(
+        ll_per_run = sum(elpd_per_obs_per_run)
+      ) %>%
+      # Monte Carlo integration over simulation runs/draws to calculate avg ll under this model
+      ungroup() %>%
+      summarise(
+        max_ll = max(ll_per_run), # normalize by max ll to make probabilities comparable across Monte Carlo simulations
+        ll = max_ll + log(sum(exp(ll_per_run - max_ll))) - log(sim_n)
+      ) %>% 
+      select(ll) %>%
+      as.double() # returns log likelihood after dropping other columns
+  }
+  
+  # apply log likelihood function for each alternative causal explanation
+  explanations <- list(TRUE, FALSE)
+  models <- map(explanations, ~loglik(as.logical(.x), d)) %>%
+    set_names(explanations) %>%
+    map_dfr(broom::tidy, .id = ".x") %>%
+    mutate(
+      .x = as.logical(.x)
+    ) %>%
+    rename(
+      target_claim = .x,
+      ll = x
+    )
+    
+  # calculate causal support:
+  # prior probability of each model (assume uniform prior)
+  n_models <- nrow(models)
+  n_target_models <- models %>% filter(target_claim) %>% nrow()
+  prior <- 1 / n_models
+  # log likelihood of numerator models, where the target claim is assumed true
+  numerator <- models %>% 
+    filter(target_claim) %>%
+    mutate(
+      llmax = max(ll)
+    ) %>%
+    ungroup() %>%
+    summarise(
+      ll_numerator = unique(llmax) + log(sum(exp(ll - unique(llmax))))
+    ) %>%
+    as.double()
+  # log likelihood of denominator models, where the target claim is assumed false
+  denominator <- models %>% 
+    filter(!target_claim) %>%
+    mutate(
+      llmax = max(ll)
+    ) %>%
+    ungroup() %>%
+    summarise(
+      ll_denominator = unique(llmax) + log(sum(exp(ll - unique(llmax))))
+    ) %>%
+    as.double()
+  # calculate causal support (Bayesian update in log odds units)
+  cs <- (numerator - denominator) + (log(n_target_models * prior) - log((n_models - n_target_models) * prior))
+}
+```
+
+
+
+## Create a synthetic dataset
+
+We'll set up a dataset about fake advertising campaigns to demonstrate our model check conditions. The outcome variable will be `sales`, and the single predictor with two levels will be `ad_campaign`. This represents a simple synthetic DGP that could be used to evaluation model checks.
+
+We will sample from two advertising campaigns, using a binomial distribution to create two groups of approximately equal size. The predictor `ad_campaign` is completely synthetic.
+
+```{r}
+sample_size <- 150
+
+df.ad <- tibble(
+    p = list(0.5) # probability of each campaign
+  ) %>%
+  mutate(
+    ad_campaign = map(p, ~rbinom(sample_size, 1, .))
+  ) %>%
+  unnest(cols = c(p, ad_campaign)) %>%
+  mutate(
+    ad_campaign = case_when(
+      ad_campaign == 0 ~ 'informative',
+      ad_campaign == 1 ~ 'humorous'
+    )
+  ) %>%
+  select(ad_campaign)
+
+head(df.ad)
+```
+
+Next, we *calculate location and scale parameters `mu` and `sigma` for each observation*. This entails defining fake parameters to set up a data generating process (DGP) that resembles a regression model. 
+
+```{r}
+# settings arbitrarily chosen to place outcomes in a believable domain
+# getting these right is a matter of guess and check
+sd <- 1000                               # overall sd of sales
+r_squared <- 0.9
+res_sd <- sd * (1 - r_squared)
+sigma_intercept <- sqrt(sd^2 - res_sd^2) # sd for for baseline/reference group
+mu_intercept <- 100500                   # mean for baseline/reference group
+main_effect <- 0.8                       # target relationship (standardized effect size)
+variance_effect <- 0.015                 # nuisance relationship (standardized effect size)
+```
+
+Similar to making predictions from a regression models, we will use these fake parameters to calculate conditional estimates of the location `mu` and scale `sigma` of outcomes for each observation.
+
+```{r}
+df.ad <- df.ad %>%
+  rowwise() %>%
+  mutate(
+    mu = mu_intercept + 
+      case_when(                    # ad_campaign effect on mu
+        ad_campaign == "humorous" ~ main_effect * sd, 
+        TRUE                      ~ 0.0
+      ),
+    log_sigma = log(sigma_intercept) +
+      case_when(                    # ad_campaign effect on log_sigma
+        ad_campaign == "humorous" ~ variance_effect * log(sd), 
+        TRUE                      ~ 0.0
+      ),
+    sigma = exp(log_sigma)
+  )
+```
+
+Now, we'll *use location and scale estimates to generate fake outcomes*. For each observation in the dataset, we have conditional location `mu` and scale `sigma` estimates from the previous step. Now we pass these parameters through a Gaussian random number generator to compute synthetic outcomes `sales` associated with each observation in the synthetic dataset.
+
+```{r}
+df.ad <- df.ad %>%
+  rowwise() %>%
+  mutate(
+    sales = list(rnorm(1, mu, sigma) + rnorm(1, 0, res_sd)) # generate predictive dist
+  ) %>%
+  unnest(cols = c("sales")) %>%
+  select(ad_campaign, sales)
+```
+
+Using the function we defined above, we can *assign causal support values to this datasets.* Causal support rates the posterior log odds that a target claim is true about a given dataset, or basically, how much participants in the study should believe that "Ad campaign has an impact on sales". 
+
+```{r}
+cs <- causal_support_ad(df.ad)
+plogis(cs)
+```
+
+The output above can be interpreted as the subjective probability that the target claim is true. Since we chose to make the target effect a Cohen's d of 0.8 (a "strong" effect size), the subjective probability that the synthetic dataset contains this relationship should be high.
+
+
+## Demonstrate model check conditions
+
+The first model check condition is one in which we show the *data only* without any model predictions. Let's see this synthetic dataset we created.
+
+```{r}
+df.ad %>%
+  ggplot(aes(x = ad_campaign, y = sales)) +
+  geom_point(shape = "_", color = "steelblue", size  = 5) +
+  theme_minimal()
+```
+
+The next type of model check condition is a *fitted, well-specified model check*. To render this, we'll need to fit a model to our dataset and append model predictions to visualize. 
+
+The code block below is simular to what happens on the back-end of Exploratory Visual Modeling (EVM), our prototype realizing model checks in software for exploratory data analysis.
+
+```{r}
+n_draws <- 5
+outcome_name <- sym("sales")
+model_name <- sym("normal | mu ~ 1 | sigma ~ ad_campaign")
+
+# fit model
+model <- gamlss(sales ~ 1, sigma.fo = ~ ad_campaign, data = df.ad)
+
+# get summary statistics describing model predictions
+pred.mu <- predict(model, se.fit = TRUE, type = "response")
+pred.sigma <- predict(model, what = "sigma", se.fit = TRUE)
+
+# generate new dataframe to hold results
+mc.fitted.well <- df.ad %>%
+  mutate(
+    mu.expectation = pred.mu$fit,                       # add fitted mu and its standard error to dataframe
+    mu.se = pred.mu$se.fit,
+    logsigma.expectation = pred.sigma$fit,              # add fitted logsigma and its standard error to dataframe 
+    logsigma.se = pred.sigma$se.fit,
+    df = df.residual(model)                             # get degrees of freedom
+  )
+
+# propagate uncertainty in fit to generate an ensemble of model predictions (mimic a posterior predictive distribution)
+mc.fitted.well <- mc.fitted.well %>%
+  mutate(
+    draw = list(1:n_draws),                             # generate list of draw numbers
+    t1 = map(df, ~rt(n_draws, .)),                      # simulate draws from t distribution to transform into means
+    t2 = map(df, ~rt(n_draws, .))                       # simulate draws from t distribution to transform into log sigma
+  ) %>%
+  unnest(cols = c("draw", "t1", "t2")) %>%
+  mutate(
+    mu = t1 * mu.se + mu.expectation,                   # scale and shift t to get a sampling distribution of means
+    logsigma = t2 * logsigma.se + logsigma.expectation, # scale and shift t to get a sampling distribution of log sigma
+    sigma = exp(logsigma)                               # backtransform to sampling distribution of sigma parameter
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # compute predictive distribution
+    prediction = rnorm(1, mu, sigma)
+  ) %>%
+  rename(
+    data = !!outcome_name,
+    !!model_name := prediction
+  ) %>%
+  pivot_longer(
+    cols = c("data", model_name),
+    names_to = "modelcheck_group",
+    values_to = as.character(outcome_name)
+  ) %>%
+  select(-one_of("mu.expectation", "mu.se", "logsigma.expectation", "logsigma.se", "df", "t1", "t2", "mu", "logsigma", "sigma"))
+```
+
+Now, let's see what this fitted, well-specified model check looks like.
+
+```{r}
+plt <- mc.fitted.well %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.5)) +
+  theme_minimal() +
+  transition_manual(draw)
+
+animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+```
+
+This makes me slightly less confident that the target relationship is true because a model that excludes the target relationship seems to do alright at predicting the pattern in the data. For this reason, fitting is a potential pitfall with model checks.
+
+However, there's another potential issue with fitted model checks to demonstrate before we look at an alternative approach to rendering model checks.
+
+Next, let's look at a *fitted, mis-specified model check*. Again, we'll need to fit a model to our dataset and append model predictions to visualize. This will look similar to the block above; the difference is in the model specification we choose. In this mis-specified condition, we ignore the known variance effect of ad campaign.
+
+```{r}
+n_draws <- 5
+outcome_name <- sym("sales")
+model_name <- sym("normal | mu ~ 1 | sigma ~ 1")
+
+# fit model
+model <- gamlss(sales ~ 1, sigma.fo = ~ 1, data = df.ad)
+
+# get summary statistics describing model predictions
+pred.mu <- predict(model, se.fit = TRUE, type = "response")
+pred.sigma <- predict(model, what = "sigma", se.fit = TRUE)
+
+# generate new dataframe to hold results
+mc.fitted.mis <- df.ad %>%
+  mutate(
+    mu.expectation = pred.mu$fit,                       # add fitted mu and its standard error to dataframe
+    mu.se = pred.mu$se.fit,
+    logsigma.expectation = pred.sigma$fit,              # add fitted logsigma and its standard error to dataframe 
+    logsigma.se = pred.sigma$se.fit,
+    df = df.residual(model)                             # get degrees of freedom
+  )
+
+# propagate uncertainty in fit to generate an ensemble of model predictions (mimic a posterior predictive distribution)
+mc.fitted.mis <- mc.fitted.mis %>%
+  mutate(
+    draw = list(1:n_draws),                             # generate list of draw numbers
+    t1 = map(df, ~rt(n_draws, .)),                      # simulate draws from t distribution to transform into means
+    t2 = map(df, ~rt(n_draws, .))                       # simulate draws from t distribution to transform into log sigma
+  ) %>%
+  unnest(cols = c("draw", "t1", "t2")) %>%
+  mutate(
+    mu = t1 * mu.se + mu.expectation,                   # scale and shift t to get a sampling distribution of means
+    logsigma = t2 * logsigma.se + logsigma.expectation, # scale and shift t to get a sampling distribution of log sigma
+    sigma = exp(logsigma)                               # backtransform to sampling distribution of sigma parameter
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # compute predictive distribution
+    prediction = rnorm(1, mu, sigma)
+  ) %>%
+  rename(
+    data = !!outcome_name,
+    !!model_name := prediction
+  ) %>%
+  pivot_longer(
+    cols = c("data", model_name),
+    names_to = "modelcheck_group",
+    values_to = as.character(outcome_name)
+  ) %>%
+  select(-one_of("mu.expectation", "mu.se", "logsigma.expectation", "logsigma.se", "df", "t1", "t2", "mu", "logsigma", "sigma"))
+```
+
+Now, let's see what this fitted, mis-specified model check looks like.
+
+```{r}
+plt <- mc.fitted.mis %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.5)) +
+  theme_minimal() +
+  transition_manual(draw)
+
+animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+```
+
+This looks similar to the previous condition, although there is more discrepancy between the model predictions and the pattern in the dataset. This discrepancy might make it easier for us to endorse that there is an impact of ad campaign on sales, however, the discrepancy is convincing for the wrong reason, namely that we are ignoring structure in the DGP that can be mistaken for the target relationship.
+
+Now that we've seen where we can go astray with fitted model checks, let's try an alternative, *non-fitted model checks*. In this alternative setup for model checks, we will sample parameter values from a weakly informative prior rather than from the sampling distribution of a fitted model. This will show us a wider range of patterns consistent with the model's structure that gets ruled out by the fitting process.
+
+The code block below is reminiscent of our causal support calculation, where we define a weakly informative prior based on summary statistics of our dataset and integrate over possible parameter values.
+
+```{r}
+n_draws <- 20
+outcome_name <- sym("sales")
+model_name <- sym("normal | mu ~ 1 | sigma ~ ad_campaign")
+
+# summary statistics to use for prior setting
+deg_free <- length(df.ad$sales) - 1
+sample_mean <- mean(df.ad$sales) 
+sample_var <- var(df.ad$sales)
+
+# sample parameters for model
+mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var) / 2, sample_mean + sqrt(sample_var) / 2)
+mu_diff <- rep(0, n_draws) # assume null mean diff
+# scaled inv chi squared dist is conjugate prior for sigma of normal distribution
+sigma_intercept <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0))
+# variance effects are multiplicative and can be larger for datasets with larger overall variance
+logsigma_diff <- rnorm(n_draws, 0, log(sqrt(sample_var)) / 6)
+
+# run parameter values through a regression model to generate expected mu and sigma for each observation
+mc.nonfitted <- df.ad %>%
+  mutate(
+    draw = list(seq(from = 1, to = n_draws, by = 1)),
+    mu = case_when(
+      ad_campaign == "informative" ~ list(mu_intercept),
+      ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
+    ),
+    sigma = case_when(
+      ad_campaign == "informative" ~ list(sigma_intercept),
+      ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+    )
+  ) %>%
+  unnest(cols = c("draw", "mu", "sigma"))
+
+# sample predictive distribution
+mc.nonfitted <- mc.nonfitted %>% 
+  rowwise() %>%
+  mutate(
+    prediction = rnorm(1, mu, sigma)
+  ) %>%
+  rename(
+    data = !!outcome_name,
+    !!model_name := prediction
+  ) %>%
+  pivot_longer(
+    cols = c("data", model_name),
+    names_to = "modelcheck_group",
+    values_to = as.character(outcome_name)
+  ) %>%
+  select(-one_of("mu", "sigma"))
+```
+
+Now, let's see what this non-fitted model check looks like.
+
+```{r}
+plt <- mc.nonfitted %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.5)) +
+  theme_minimal() +
+  transition_manual(draw)
+
+animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+```
+
+The predictive distribution is a lot jumpier now since we are now showing greater variability in parameter space. Rather than showing variability in the sampling distribution of a fitted model, we are choosing how to sample parameter space based on parameter values that seem roughly consistent with the data. This is more of a subjective sampling procedure, and the appearance of the resulting model check depends mostly on our subjective choice of priors. If we choose the priors in a principled manner, the question we need to answer is, "How much should be regularize our models?" where *regularization* refers to the degree to which our choice of prior constrains our sampling within parameter space. 
+
+Too much regularization, and the reference distribution will be so stable that it tells us nothing interesting. A discrepancy between observed data and predictions from an over-regularized model just tells us that the underlying parameters of the DGP are not exactly the values sampled from the prior. However, this does not signal whether or not the structure of the model is compatible with the data.
+
+```{r}
+n_draws <- 20
+outcome_name <- sym("sales")
+model_name <- sym("normal | mu ~ 1 | sigma ~ ad_campaign")
+
+# summary statistics to use for prior setting
+deg_free <- length(df.ad$sales) - 1
+sample_mean <- mean(df.ad$sales) 
+sample_var <- var(df.ad$sales)
+
+# sample parameters for model
+mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var) / 10, sample_mean + sqrt(sample_var) / 10) # change
+mu_diff <- rep(0, n_draws) # assume null mean diff
+# scaled inv chi squared dist is conjugate prior for sigma of normal distribution
+sigma_intercept <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0)) / 5 # change
+# variance effects are multiplicative and can be larger for datasets with larger overall variance
+logsigma_diff <- rnorm(n_draws, 0, log(sqrt(sample_var)) / 30) # change
+
+# run parameter values through a regression model to generate expected mu and sigma for each observation
+mc.nonfitted.overreg <- df.ad %>%
+  mutate(
+    draw = list(seq(from = 1, to = n_draws, by = 1)),
+    mu = case_when(
+      ad_campaign == "informative" ~ list(mu_intercept),
+      ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
+    ),
+    sigma = case_when(
+      ad_campaign == "informative" ~ list(sigma_intercept),
+      ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+    )
+  ) %>%
+  unnest(cols = c("draw", "mu", "sigma"))
+
+# sample predictive distribution
+mc.nonfitted.overreg <- mc.nonfitted.overreg %>% 
+  rowwise() %>%
+  mutate(
+    prediction = rnorm(1, mu, sigma)
+  ) %>%
+  rename(
+    data = !!outcome_name,
+    !!model_name := prediction
+  ) %>%
+  pivot_longer(
+    cols = c("data", model_name),
+    names_to = "modelcheck_group",
+    values_to = as.character(outcome_name)
+  ) %>%
+  select(-one_of("mu", "sigma"))
+
+plt <- mc.nonfitted.overreg %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.5)) +
+  theme_minimal() +
+  transition_manual(draw)
+
+animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+```
+
+Too little regularization on the other hand, and the reference distribution will be so variable that will dwarf all sources of variability in the dataset. The discrepancy is obvious but also meaningless because the parameter values sampled from the prior are allowed to take on values that are absurd. This also does not signal whether or not the structure of the model is compatible with the data.
+
+```{r}
+n_draws <- 20
+outcome_name <- sym("sales")
+model_name <- sym("normal | mu ~ 1 | sigma ~ ad_campaign")
+
+# summary statistics to use for prior setting
+deg_free <- length(df.ad$sales) - 1
+sample_mean <- mean(df.ad$sales) 
+sample_var <- var(df.ad$sales)
+
+# sample parameters for model
+mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var) * 3, sample_mean + sqrt(sample_var) * 3) # change
+mu_diff <- rep(0, n_draws) # assume null mean diff
+# scaled inv chi squared dist is conjugate prior for sigma of normal distribution
+sigma_intercept <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0)) * 6 # change
+# variance effects are multiplicative and can be larger for datasets with larger overall variance
+logsigma_diff <- rnorm(n_draws, 0, log(sqrt(sample_var))) # change
+
+# run parameter values through a regression model to generate expected mu and sigma for each observation
+mc.nonfitted.overreg <- df.ad %>%
+  mutate(
+    draw = list(seq(from = 1, to = n_draws, by = 1)),
+    mu = case_when(
+      ad_campaign == "informative" ~ list(mu_intercept),
+      ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
+    ),
+    sigma = case_when(
+      ad_campaign == "informative" ~ list(sigma_intercept),
+      ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+    )
+  ) %>%
+  unnest(cols = c("draw", "mu", "sigma"))
+
+# sample predictive distribution
+mc.nonfitted.overreg <- mc.nonfitted.overreg %>% 
+  rowwise() %>%
+  mutate(
+    prediction = rnorm(1, mu, sigma)
+  ) %>%
+  rename(
+    data = !!outcome_name,
+    !!model_name := prediction
+  ) %>%
+  pivot_longer(
+    cols = c("data", model_name),
+    names_to = "modelcheck_group",
+    values_to = as.character(outcome_name)
+  ) %>%
+  select(-one_of("mu", "sigma"))
+
+plt <- mc.nonfitted.overreg %>%
+  ggplot(aes(x = ad_campaign, y = sales, color = modelcheck_group, group = modelcheck_group)) +
+  geom_point(shape = "_", size  = 5, position = position_dodge(0.5)) +
+  theme_minimal() +
+  transition_manual(draw)
+
+animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+```
+
+In order for our model check to signal compatibility of the data with the *structure* of the DGP (rather than its parameters), we need to choose the level of regularization correctly, which is a tricky judgment that surely requires future research and statistical theory. Our choice of regularization here is a starting point to facilitate comparisons between different setups for model checks.
+

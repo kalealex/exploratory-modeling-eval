@@ -173,6 +173,112 @@ causal_support <- function(d, outcome, predictors, target_term, sigma_submodel =
 }
 ```
 
+```{r}
+causal_support_ad <- function(d) {
+  # function to calculate log likelihood of data for a given model (assuming Gaussian distribution)
+  loglik <- function(target_effect = FALSE, df) {
+    # summary statistics for prior setting
+    sim_n <- 10000
+    deg_free <- length(df$sales) - 1
+    sample_min <- min(df$sales) 
+    sample_max <- max(df$sales)
+    sample_var <- var(df$sales)
+    
+    # sample parameters for model
+    mu_intercept <- runif(sim_n, sample_min, sample_max)
+    if (target_effect) {
+      # assume mean diff
+      mu_diff <- runif(sim_n, -(sample_max - sample_min), sample_max - sample_min)
+    } else {
+      # assume null mean diff
+      mu_diff <- rep(0, sim_n)
+    }
+    # scaled inv chi squared dist is conjugate prior for sigma of normal distribution
+    sigma_intercept <- sqrt(deg_free * sample_var / rchisq(sim_n, deg_free, 0)) 
+    # variance effects are multiplicative and can be larger for datasets with larger overall variance
+    logsigma_diff <- rnorm(sim_n, 0, log(sqrt(sample_var)))
+    
+    # run parameter values through a regression model to generate expected mu and sigma for each observation
+    output <- df %>%
+      mutate(
+        draw = list(seq(from = 1, to = sim_n, by = 1)),
+        mu = case_when(
+          ad_campaign == "informative" ~ list(mu_intercept),
+          ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
+        ),
+        sigma = case_when(
+          ad_campaign == "informative" ~ list(sigma_intercept),
+          ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+        )
+      ) %>%
+      unnest(cols = c("draw", "mu", "sigma"))
+    
+    # use sampling dist of expected mu and sigma for each observed data point to assign 
+    # likelihood of the dataset under each simulation run
+    output %>%
+      rowwise() %>%
+      mutate(
+        elpd_per_obs_per_run = dnorm(sales, mu, sigma, log = TRUE)
+      ) %>% 
+      group_by(draw) %>%
+      summarise(
+        ll_per_run = sum(elpd_per_obs_per_run)
+      ) %>%
+      # Monte Carlo integration over simulation runs/draws to calculate avg ll under this model
+      ungroup() %>%
+      summarise(
+        max_ll = max(ll_per_run), # normalize by max ll to make probabilities comparable across Monte Carlo simulations
+        ll = max_ll + log(sum(exp(ll_per_run - max_ll))) - log(sim_n)
+      ) %>% 
+      select(ll) %>%
+      as.double() # returns log likelihood after dropping other columns
+  }
+  
+  # apply log likelihood function for each alternative causal explanation
+  explanations <- list(TRUE, FALSE)
+  models <- map(explanations, ~loglik(as.logical(.x), d)) %>%
+    set_names(explanations) %>%
+    map_dfr(broom::tidy, .id = ".x") %>%
+    mutate(
+      .x = as.logical(.x)
+    ) %>%
+    rename(
+      target_claim = .x,
+      ll = x
+    )
+    
+  # calculate causal support:
+  # prior probability of each model (assume uniform prior)
+  n_models <- nrow(models)
+  n_target_models <- models %>% filter(target_claim) %>% nrow()
+  prior <- 1 / n_models
+  # log likelihood of numerator models, where the target claim is assumed true
+  numerator <- models %>% 
+    filter(target_claim) %>%
+    mutate(
+      llmax = max(ll)
+    ) %>%
+    ungroup() %>%
+    summarise(
+      ll_numerator = unique(llmax) + log(sum(exp(ll - unique(llmax))))
+    ) %>%
+    as.double()
+  # log likelihood of denominator models, where the target claim is assumed false
+  denominator <- models %>% 
+    filter(!target_claim) %>%
+    mutate(
+      llmax = max(ll)
+    ) %>%
+    ungroup() %>%
+    summarise(
+      ll_denominator = unique(llmax) + log(sum(exp(ll - unique(llmax))))
+    ) %>%
+    as.double()
+  # calculate causal support (Bayesian update in log odds units)
+  cs <- (numerator - denominator) + (log(n_target_models * prior) - log((n_models - n_target_models) * prior))
+}
+```
+
 Now, we are ready to label the difficulty of judging the synthetic relationships we will ask participants about in the study. The causal support numbers returned by the function above are the _posterior log odds of the target relationship_ given a family of regression models based on the outcome and set of predictors provided, assuming a uniform prior across candidate models.
 
 
