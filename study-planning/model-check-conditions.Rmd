@@ -54,7 +54,7 @@ causal_support_ad <- function(d) {
   # function to calculate log likelihood of data for a given model (assuming Gaussian distribution)
   loglik <- function(target_effect = FALSE, df) {
     # summary statistics for prior setting
-    sim_n <- 10000
+    sim_n <- 50000
     deg_free <- length(df$sales) - 1
     sample_min <- min(df$sales) 
     sample_max <- max(df$sales)
@@ -256,7 +256,7 @@ The next type of model check condition is a *fitted, well-specified model check*
 The code block below is simular to what happens on the back-end of Exploratory Visual Modeling (EVM), our prototype realizing model checks in software for exploratory data analysis.
 
 ```{r}
-n_draws <- 5
+n_draws <- 20
 outcome_name <- sym("sales")
 model_name <- sym("normal | mu ~ 1 | sigma ~ ad_campaign")
 
@@ -316,7 +316,7 @@ plt <- mc.fitted.well %>%
   theme_minimal() +
   transition_manual(draw)
 
-animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+animate(plt, fps = 2.5, nframes = n_draws, res = 100, width = 500, height = 400)
 ```
 
 This makes me slightly less confident that the target relationship is true because a model that excludes the target relationship seems to do alright at predicting the pattern in the data. For this reason, fitting is a potential pitfall with model checks.
@@ -326,7 +326,7 @@ However, there's another potential issue with fitted model checks to demonstrate
 Next, let's look at a *fitted, mis-specified model check*. Again, we'll need to fit a model to our dataset and append model predictions to visualize. This will look similar to the block above; the difference is in the model specification we choose. In this mis-specified condition, we ignore the known variance effect of ad campaign.
 
 ```{r}
-n_draws <- 5
+n_draws <- 20
 outcome_name <- sym("sales")
 model_name <- sym("normal | mu ~ 1 | sigma ~ 1")
 
@@ -386,7 +386,7 @@ plt <- mc.fitted.mis %>%
   theme_minimal() +
   transition_manual(draw)
 
-animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+animate(plt, fps = 2.5, nframes = n_draws, res = 100, width = 500, height = 400)
 ```
 
 This looks similar to the previous condition, although there is more discrepancy between the model predictions and the pattern in the dataset. This discrepancy might make it easier for us to endorse that there is an impact of ad campaign on sales, however, the discrepancy is convincing for the wrong reason, namely that we are ignoring structure in the DGP that can be mistaken for the target relationship.
@@ -406,12 +406,11 @@ sample_mean <- mean(df.ad$sales)
 sample_var <- var(df.ad$sales)
 
 # sample parameters for model
-mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var) / 2, sample_mean + sqrt(sample_var) / 2)
+mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var / 2), sample_mean + sqrt(sample_var / 2))
 mu_diff <- rep(0, n_draws) # assume null mean diff
 # scaled inv chi squared dist is conjugate prior for sigma of normal distribution
-sigma_intercept <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0))
-# variance effects are multiplicative and can be larger for datasets with larger overall variance
-logsigma_diff <- rnorm(n_draws, 0, log(sqrt(sample_var)) / 6)
+sigma_control <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0))
+sigma_treat <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0)) # independent variances
 
 # run parameter values through a regression model to generate expected mu and sigma for each observation
 mc.nonfitted <- df.ad %>%
@@ -422,8 +421,8 @@ mc.nonfitted <- df.ad %>%
       ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
     ),
     sigma = case_when(
-      ad_campaign == "informative" ~ list(sigma_intercept),
-      ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+      ad_campaign == "informative" ~ list(sigma_control),
+      ad_campaign == "humorous"    ~ list(sigma_treat)
     )
   ) %>%
   unnest(cols = c("draw", "mu", "sigma"))
@@ -455,7 +454,7 @@ plt <- mc.nonfitted %>%
   theme_minimal() +
   transition_manual(draw)
 
-animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+animate(plt, fps = 2.5, nframes = n_draws, res = 100, width = 500, height = 400)
 ```
 
 The predictive distribution is a lot jumpier now since we are now showing greater variability in parameter space. Rather than showing variability in the sampling distribution of a fitted model, we are choosing how to sample parameter space based on parameter values that seem roughly consistent with the data. This is more of a subjective sampling procedure, and the appearance of the resulting model check depends mostly on our subjective choice of priors. If we choose the priors in a principled manner, the question we need to answer is, "How much should be regularize our models?" where *regularization* refers to the degree to which our choice of prior constrains our sampling within parameter space. 
@@ -473,12 +472,12 @@ sample_mean <- mean(df.ad$sales)
 sample_var <- var(df.ad$sales)
 
 # sample parameters for model
-mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var) / 10, sample_mean + sqrt(sample_var) / 10) # change
+# change is that variance is scaled by a factor of 1 / 5
+mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var / 10) , sample_mean + sqrt(sample_var / 10))
 mu_diff <- rep(0, n_draws) # assume null mean diff
 # scaled inv chi squared dist is conjugate prior for sigma of normal distribution
-sigma_intercept <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0)) / 5 # change
-# variance effects are multiplicative and can be larger for datasets with larger overall variance
-logsigma_diff <- rnorm(n_draws, 0, log(sqrt(sample_var)) / 30) # change
+sigma_control <- sqrt(deg_free * sample_var / 5 / rchisq(n_draws, deg_free, 0)) 
+sigma_treat <- sqrt(deg_free * sample_var / 5 / rchisq(n_draws, deg_free, 0)) # independent variances
 
 # run parameter values through a regression model to generate expected mu and sigma for each observation
 mc.nonfitted.overreg <- df.ad %>%
@@ -489,8 +488,8 @@ mc.nonfitted.overreg <- df.ad %>%
       ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
     ),
     sigma = case_when(
-      ad_campaign == "informative" ~ list(sigma_intercept),
-      ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+      ad_campaign == "informative" ~ list(sigma_control),
+      ad_campaign == "humorous"    ~ list(sigma_treat)
     )
   ) %>%
   unnest(cols = c("draw", "mu", "sigma"))
@@ -518,10 +517,10 @@ plt <- mc.nonfitted.overreg %>%
   theme_minimal() +
   transition_manual(draw)
 
-animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+animate(plt, fps = 2.5, nframes = n_draws, res = 100, width = 500, height = 400)
 ```
 
-Too little regularization on the other hand, and the reference distribution will be so variable that will dwarf all sources of variability in the dataset. The discrepancy is obvious but also meaningless because the parameter values sampled from the prior are allowed to take on values that are absurd. This also does not signal whether or not the structure of the model is compatible with the data.
+Too little regularization, on the other hand, and the reference distribution will be so variable that will dwarf all sources of variability in the dataset. The discrepancy is obvious but also meaningless because the parameter values sampled from the prior are allowed to take on values that are absurd. This also does not signal whether or not the structure of the model is compatible with the data.
 
 ```{r}
 n_draws <- 20
@@ -534,12 +533,12 @@ sample_mean <- mean(df.ad$sales)
 sample_var <- var(df.ad$sales)
 
 # sample parameters for model
-mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var) * 3, sample_mean + sqrt(sample_var) * 3) # change
+# change is that variance is scaled by a factor of 6
+mu_intercept <- runif(n_draws, sample_mean - sqrt(sample_var * 3), sample_mean + sqrt(sample_var * 3))
 mu_diff <- rep(0, n_draws) # assume null mean diff
 # scaled inv chi squared dist is conjugate prior for sigma of normal distribution
-sigma_intercept <- sqrt(deg_free * sample_var / rchisq(n_draws, deg_free, 0)) * 6 # change
-# variance effects are multiplicative and can be larger for datasets with larger overall variance
-logsigma_diff <- rnorm(n_draws, 0, log(sqrt(sample_var))) # change
+sigma_control <- sqrt(deg_free * sample_var * 6 / rchisq(n_draws, deg_free, 0))
+sigma_treat <- sqrt(deg_free * sample_var * 6 / rchisq(n_draws, deg_free, 0))
 
 # run parameter values through a regression model to generate expected mu and sigma for each observation
 mc.nonfitted.overreg <- df.ad %>%
@@ -550,8 +549,8 @@ mc.nonfitted.overreg <- df.ad %>%
       ad_campaign == "humorous"    ~ list(mu_intercept + mu_diff)
     ),
     sigma = case_when(
-      ad_campaign == "informative" ~ list(sigma_intercept),
-      ad_campaign == "humorous"    ~ list(exp(log(sigma_intercept) + logsigma_diff))
+      ad_campaign == "informative" ~ list(sigma_control),
+      ad_campaign == "humorous"    ~ list(sigma_treat)
     )
   ) %>%
   unnest(cols = c("draw", "mu", "sigma"))
@@ -579,7 +578,7 @@ plt <- mc.nonfitted.overreg %>%
   theme_minimal() +
   transition_manual(draw)
 
-animate(plt, fps = 2.5, nframes = n_draws, res = 500, width = 2500, height = 2000)
+animate(plt, fps = 2.5, nframes = n_draws, res = 100, width = 500, height = 400)
 ```
 
 In order for our model check to signal compatibility of the data with the *structure* of the DGP (rather than its parameters), we need to choose the level of regularization correctly, which is a tricky judgment that surely requires future research and statistical theory. Our choice of regularization here is a starting point to facilitate comparisons between different setups for model checks.
