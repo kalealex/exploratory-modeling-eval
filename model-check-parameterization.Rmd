@@ -1,0 +1,257 @@
+---
+title: "Model check parameterization"
+output: html_document
+date: "2023-03-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(brms)
+library(tidybayes)
+library(ggplot2)
+library(ggthemes)
+library(gganimate)
+```
+
+## Overview
+
+A model check's appearance depends on parameterization and sampling decisions. 
+These should be informed by statistical theory and empirical evidence on cognitive
+capabilities and limitations for graphical statical inference.
+
+In this document, we generate a few model checks to demonstrate the ways that
+different choices can dramatically impact the appearance of a model check 
+visualization, and thus impact the user's judgment of the discrepancy between
+the data and the model predictions. 
+
+
+## Student absences data
+
+For our example, we'll use the student absenses dataset described in the paper.
+
+```{r}
+df = read.csv("datasets/eval_students.csv")
+```
+
+We'll do some simple prep for modeling this data with a log normal distribution.
+
+```{r}
+df = df |>
+  filter(absences != 0) |>
+  mutate(
+    g_edu = as.factor(g_edu),
+    log_absences = log(absences))
+```
+
+
+## Prior predictive checks
+
+First we will specify and sample a couple prior predictive checks in order to show 
+how the appearance of the model check depends on the choice of prior.
+
+For our example model, we will consider a case similar to model checks created by
+participants in our user study. Specifically, we will specify a model that includes
+predictors we might expect to be associated with socioeconomic status and a 
+student's home life more broadly, guardian education, guardian job, and internet
+access. The model checks we show are meant to examine whether time the student
+spends studying still seems like an explanatory factor after accounting for these
+other variables.
+
+### Default, uninformative priors
+
+In this first example, we'll use the defaults provided by `brms`. 
+
+```{r}
+get_prior(
+  bf(log_absences ~ g_edu + g_job + internet),
+  family = gaussian,
+  data = df)
+```
+
+We will use a student t distribution for beta coefficients instead of the default 
+flat prior, but both of these choices impose minimal regularization.
+
+```{r}
+m_prior_default = brm(
+  bf(log_absences ~ g_edu + g_job + internet),
+  family = gaussian,
+  prior = c(prior(student_t(3, 1.4, 2.5), class = Intercept),
+            prior(student_t(3, 0, 2.5), class = b),
+            prior(student_t(3, 0, 2.5), class = sigma)),
+  data = df,
+  sample_prior = "only")
+```
+
+Now, we'll sample predicted draws from the model and visualize them in a model 
+check mimicking the design we used in EVM.
+
+```{r}
+p_default_df = df |>
+  add_predicted_draws(m_prior_default, ndraws = 20) |>
+  rename(
+    y = log_absences,
+    y_rep = .prediction) |>
+  pivot_longer(cols=c('y', 'y_rep'),
+                    names_to='Model group',
+                    values_to='log_absences')
+```
+
+```{r}
+p_default_mc = p_default_df |> 
+  ggplot(aes(x = study_time, y = log_absences, color = `Model group`)) +
+  geom_point(alpha = 0.7, size = 1) +
+  scale_color_tableau(palette = "Tableau 10") +
+  facet_grid(. ~ `Model group`) +
+  theme_minimal() +
+  transition_manual(.draw)
+
+animate(p_default_mc, nframes = 20, fps = 2.5, res = 200, units = "in", height = 2, width = 3)
+```
+
+We can see that the resulting model check is highly variables in the appearance 
+of the predictive distribution. This results in a y-axis scale that is blown up
+so much that it's difficult to see the structure in the original data. A visual
+analytics user might not get much from a prior predictive check without priors
+that are more carefully chosen.
+
+### Weakly informative priors
+
+In this next example, we'll define weakly informed priors following a similar 
+approach to what we've done using these tools for previous empirical work. 
+
+To start this means centering the intercept prior at the empirical mean of 
+`log_absences`, 1.62.
+
+```{r}
+df$log_absences |> mean()
+```
+
+We will also reduce the variance parameters of our priors until we get a range of 
+prior predictions that roughly matches the scale of the observed data. This fine
+tuning is a process of trial and error, but it can probably be automated with a 
+carefully written algorithm. A few rounds of iterative model checking reveals that
+the default, uninformative priors we get from `brms` are about an order of magnitude
+too large to support a legible prior predictive check visualization. We do not mean
+to suggest, however, that these defaults are improper for statistical inference.
+Uninformative priors are intended to provide users with a reasonable starting place
+for fitting with an MCMC algorithm, without knowing anything about their data. 
+Prior predictive checking, on the other hand, often requires domain knowledge and
+a rough match to the high-level summary statistics of the observed data as we
+demonstrate here.
+
+```{r}
+m_prior_weak = brm(
+  bf(log_absences ~ g_edu + g_job + internet),
+  family = gaussian,
+  prior = c(prior(student_t(3, 1.62, 0.25), class = Intercept),
+            prior(student_t(3, 0, 0.25), class = b),
+            prior(student_t(3, 0, 0.25), class = sigma)),
+  data = df,
+  sample_prior = "only")
+```
+
+Now, as before, we'll sample predicted draws from the model and visualize them in 
+a model check.
+
+```{r}
+p_weak_df = df |>
+  add_predicted_draws(m_prior_weak, ndraws = 20) |>
+  rename(
+    y = log_absences,
+    y_rep = .prediction) |>
+  pivot_longer(cols=c('y', 'y_rep'),
+                    names_to='Model group',
+                    values_to='log_absences')
+```
+
+```{r}
+p_weak_mc = p_weak_df |> 
+  ggplot(aes(x = study_time, y = log_absences, color = `Model group`)) +
+  geom_point(alpha = 0.7, size = 1) +
+  scale_color_tableau(palette = "Tableau 10") +
+  facet_grid(. ~ `Model group`) +
+  theme_minimal() +
+  ylim(-1, 5) +
+  transition_manual(.draw)
+
+animate(p_weak_mc, nframes = 20, fps = 2.5, res = 200, units = "in", height = 2, width = 3)
+```
+
+We can see that the resulting model check does a better job of matching the range
+of the observed data. As a result we are better able to see the kinds of structure
+that are compatible with our priors but which do not appear in the data, e.g., 
+positive slopes and homogeneity of variance across the x-axis. These visual cues
+of misfit all but disappear in the fitted model below, which by definition minimizes
+the discrepancy between data and model predictions.
+
+
+## Posterior predictive checks
+
+This last example where we fit a model to the data before sampling predictions
+from it is similar to what we do in EVM.
+
+```{r}
+m_fitted = brm(
+  bf(log_absences ~ g_edu + g_job + internet),
+  family = gaussian,
+  prior = c(prior(student_t(3, 1.4, 2.5), class = Intercept),
+            prior(student_t(3, 0, 2.5), class = b),
+            prior(student_t(3, 0, 2.5), class = sigma)),
+  data = df,
+  iter = 2000, warmup = 1000, chains = 4)
+```
+
+After fitting Bayesian regression models like this, it's good practice to look at 
+a few diagnostics.
+
+```{r}
+summary(m_fitted)
+```
+
+```{r}
+plot(m_fitted)
+```
+
+Now, we'll sample and plot the model check as above.
+
+```{r}
+fitted_df = df |>
+  add_predicted_draws(m_fitted, ndraws = 20) |>
+  rename(
+    y = log_absences,
+    y_rep = .prediction) |>
+  pivot_longer(cols=c('y', 'y_rep'),
+                    names_to='Model group',
+                    values_to='log_absences')
+```
+
+```{r}
+fitted_mc = fitted_df |> 
+  ggplot(aes(x = study_time, y = log_absences, color = `Model group`)) +
+  geom_point(alpha = 0.7, size = 1) +
+  scale_color_tableau(palette = "Tableau 10") +
+  facet_grid(. ~ `Model group`) +
+  theme_minimal() +
+  ylim(-1, 5) +
+  transition_manual(.draw)
+
+animate(fitted_mc, nframes = 20, fps = 2.5, res = 200, units = "in", height = 2, width = 3)
+```
+
+This model check resembles the ones that users see in EVM. Note that some of the
+stronger visual signals for potential misfit are dampened in this view compared
+to the prior predictive check with weakly informative priors above.
+
+## Summary
+
+Designing EVM with approximate posterior predictive checks was a good starting 
+point aligned with practices in a typical Bayesian workflow. However, it is worth
+considering the possibility of enabling users of a tool like EVM to work with 
+prior predictive checks, since carefully crafted priors can probably yield model
+check visualizations that carry more signal about the incompatibility of assumptions
+with observed data. However, designing the scaffolding, defaults, and guardrails 
+required for interactive prior predictive checking will require further research.
+

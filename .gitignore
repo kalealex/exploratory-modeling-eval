@@ -1,4 +1,5 @@
 *.pdf
 *.mov
 .Rhistory
+.RData
 archived/

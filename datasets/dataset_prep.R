@@ -1,19 +1,15 @@
 library(readr)
 library(dplyr)
+
+
 ## Preparing datasets for EVM
 
-# forest fires:
+# forest fires: https://archive.ics.uci.edu/ml/datasets/forest+fires
 # load
 df_fires <- read_csv("forestfires.csv") 
 # drop factors we don't want
 df_fires <- df_fires %>%
-  select(-c(X, Y, FFMC, DMC, ISI))
-# # reorder factors
-# df_fires <- df_fires %>%
-#   mutate(
-#     month = fct_relevel(month, "jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"),
-#     day = fct_relevel(day, "mon","tue","wed","thu","fri","sat","sun")
-#   )
+  select(-c(X, Y, ISI))
 # make rain binary since it basically is already
 df_fires <- df_fires %>%
   mutate(
@@ -22,14 +18,13 @@ df_fires <- df_fires %>%
 # rename factors that might be hard to interpret
 df_fires <- df_fires %>%
   rename(
-    drought_index = DC,
-    temperature = temp,
-    relative_humidity = RH,
-    wind_speed = wind,
-    area_burned = area
+    ffmc = FFMC,
+    dmc = DMC,
+    dc = DC,
+    rh = RH
   )
 
-# student absences:
+# students: https://archive.ics.uci.edu/ml/datasets/student%2Bperformance
 # load math and language class data separately
 df_mat <- read.table("student-mat.csv", sep=";", header=TRUE) %>% dplyr::select(-one_of(c("G1","G2"))) %>% mutate(topic = "math")
 df_lan <- read.table("student-por.csv", sep=";", header=TRUE) %>% dplyr::select(-one_of(c("G1","G2"))) %>% mutate(topic = "language")
@@ -39,29 +34,42 @@ df_students <- df_mat %>%
 # figure out which parent's education and job to use
 df_students <- df_students %>%
   mutate(
-    guardian_education = if_else(guardian == "father", Fedu, Medu),
-    guardian_job = if_else(guardian == "father", Fjob, Mjob)
+    g_edu = if_else(guardian == "father", Fedu, Medu),
+    g_job = if_else(guardian == "father", Fjob, Mjob)
+  )
+# compute daily average alcohol consumption rating
+df_students <- df_students %>%
+  mutate(
+    alcohol = (Dalc * 5.0 + Walc * 2.0) / 7.0
   )
 # drop factors we don't want
 df_students <- df_students %>%
-  select(-c(school, sex, famsize, Pstatus, Medu, Fedu, Mjob, Fjob, reason, guardian, schoolsup, famsup, paid, activities, nursery, higher, internet, romantic, famrel, freetime, goout, Dalc, Walc, health, G3, topic))  
+  dplyr::select(-c(school, sex, famsize, Pstatus, Medu, Fedu, Mjob, Fjob, reason, guardian, schoolsup, famsup, paid, activities, nursery, higher, romantic, famrel, freetime, goout, Dalc, Walc, health, G3, topic))  
 # recode address
 df_students <- df_students %>%
   mutate(
-    address = if_else(address=="U", "yes", "no")
+    address = if_else(address=="U", "urban", "rural")
   )
-# add noise to travel time and study time to make them continuous
+# sample continuous values for travel time and study time based on dataset documentation
 df_students <- df_students %>%
   rowwise() %>%
   mutate(
-    traveltime = traveltime + runif(1, -0.99, 0.99),
-    studytime = studytime + runif(1, -0.99, 0.99)
+    traveltime = case_when(
+      traveltime == 1 ~ runif(1, 1, 15),
+      traveltime == 2 ~ runif(1, 15, 30),
+      traveltime == 3 ~ runif(1, 30, 60),
+      traveltime == 4 ~ runif(1, 60, 90)
+    ),
+    studytime = case_when(
+      studytime == 1 ~ runif(1, 0, 2),
+      studytime == 2 ~ runif(1, 2, 5),
+      studytime == 3 ~ runif(1, 5, 10),
+      studytime == 4 ~ runif(1, 10, 15)
+    )
   )
 # rename factors that might be hard to interpret
 df_students <- df_students %>%
   rename(
-    classes_failed = failures,
-    urban_address = address,
     travel_time = traveltime,
     study_time = studytime 
   )
